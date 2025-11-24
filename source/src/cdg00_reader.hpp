@@ -9,14 +9,25 @@
 
 #include <memory>
 #include <vector>
-
-extern "C" {
 #include <gst/gst.h>
-}
 
-#include "format_reader.hpp"
+#include "format_reader_interface.hpp"
 
 namespace msf {
+
+// Forward declaration - we don't need the full BinFileSrc structure
+struct _BinFileSrc;
+
+/**
+ * @brief Channel enumeration for CDG0.0 format
+ */
+enum CDG00Channel {
+    CHANNEL_P = 0,   // 全色谱
+    CHANNEL_B1 = 1,  // B1 谱段
+    CHANNEL_B2 = 2,  // B2 谱段
+    CHANNEL_B3 = 3,  // B3 谱段
+    CHANNEL_B4 = 4   // B4 谱段
+};
 
 /**
  * @brief CDG0.0 format reader implementation
@@ -24,20 +35,27 @@ namespace msf {
  * This class handles the CDG0.0 remote sensing data format,
  * based on the processing logic from demuxer.c
  */
-class CDG00Reader : public FormatReader {
+class CDG00Reader : public IFormatReader {
 public:
     CDG00Reader();
     ~CDG00Reader() override;
 
-    // FormatReader interface implementation
+    // IFormatReader interface implementation
     bool        ReadHeader() override;
     GstBuffer*  ProcessFrame(const guint8* data,
                              gsize         size,
                              GstCaps*      caps) override;
-    void        SetBinFileSrcProperty(BinFileSrc* src) override;
     void        Close() override;
     gsize       GetBlockSize() const override;
     gint64      GetStrideOffset() const override;
+    
+    // Property system support
+    PropertyDefinitions GetPropertyDefinitions() const override;
+    bool SetProperty(const std::string& name, const PropertyValue& value) override;
+    PropertyValue GetProperty(const std::string& name) const override;
+    
+    // Caps generation
+    GstCaps* GetCaps() override;
 
 protected:
     bool Initialize() override;
@@ -58,13 +76,13 @@ protected:
     bool ParseLineHeader(const guint8* data, CDG0LineHeader* header);
 
     /**
-     * @brief Process video data from CDG line
+     * @brief Process video data for channel P (Panchromatic)
      * @param data Video data pointer
      * @param size Data size
      * @param caps GStreamer caps
      * @return Processed GstBuffer
      */
-    GstBuffer* ProcessVideoData(const guint8* data, gsize size, GstCaps* caps);
+    GstBuffer* ProcessVideoDataChannelP(const guint8* data, gsize size, GstCaps* caps);
 
     /**
      * @brief Convert 10-bit packed data to 8-bit
@@ -83,8 +101,8 @@ protected:
     static constexpr gsize  kLineHeaderSize    = 16;    // MSF_LINE_HEADER_SIZE
     static constexpr gsize  kLineParamSize     = 32;    // MSF_LINE_PARAM_SIZE
     static constexpr gsize  kLineDataPadding   = 1280;  // MSF_LINE_DATA_PANDDING
-    static constexpr guint  kImageWidth        = 4096;
-    static constexpr guint  kImageHeight       = 4096;
+    static constexpr guint  kDefaultImageWidth  = 4096;
+    static constexpr guint  kDefaultImageHeight = 4096;
     static constexpr guint  kPixelDepth        = 10;
     static constexpr gint64 kDefaultStrideLines = 32;   // 16line一包完整参数
 
@@ -93,6 +111,15 @@ protected:
     gsize                    block_size_;
     gint64                   stride_offset_;
     std::vector<guint8>      conversion_buffer_;
+    
+    // Configurable properties
+    CDG00Channel             channel_;          // 通道选择
+    guint                    stride_lines_;     // 步长行数
+    guint                    image_width_;      // 图像宽度
+    guint                    image_height_;     // 图像高度
+    
+    // Helper methods to recalculate based on properties
+    void RecalculateParameters();
 };
 
 }  // namespace msf

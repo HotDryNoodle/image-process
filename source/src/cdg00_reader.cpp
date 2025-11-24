@@ -5,7 +5,8 @@
  */
 
 #include "cdg00_reader.hpp"
-
+#include "format_factory.hpp"
+#include "bin_src_impl.hpp"
 #include <algorithm>
 #include <cstring>
 
@@ -15,11 +16,28 @@ extern "C" {
 
 namespace msf {
 
+// Define and register CDG00Src GStreamer element
+DEFINE_GST_FORMAT_ELEMENT_WITH_PROPERTIES(
+    msf::CDG00Reader,        // ReaderClass
+    "cdg00",                 // TypeName
+    CDG00Src,                // ElementClassName
+    CDG00Src,                // element_name
+    CDG00_SRC,               // ELEMENT_NAME
+    "CDG0.0 Source",         // LongName
+    "Source/Video/File",     // Classification
+    "Read CDG0.0 format remote sensing data files", // Description
+    "MSF Project"            // Author
+);
+
 CDG00Reader::CDG00Reader()
     : initialized_(false),
       block_size_(0),
       stride_offset_(0),
-      conversion_buffer_() {
+      conversion_buffer_(),
+      channel_(CHANNEL_P),
+      stride_lines_(kDefaultStrideLines),
+      image_width_(kDefaultImageWidth),
+      image_height_(kDefaultImageHeight) {
     Initialize();
 }
 
@@ -32,26 +50,149 @@ bool CDG00Reader::Initialize() {
         return true;
     }
 
+    RecalculateParameters();
+    initialized_ = true;
+    return true;
+}
+
+void CDG00Reader::RecalculateParameters() {
     // Calculate block size based on CDG format
     // Each line: header + params + video data + padding
-    const gsize line_video_size = kImageWidth * kPixelDepth / 8;
+    const gsize line_video_size = image_width_ * kPixelDepth / 8;
     const gsize total_line_size =
         kLineHeaderSize + kLineParamSize + line_video_size + kLineDataPadding;
 
-    block_size_ = total_line_size * kImageHeight;
-    stride_offset_ = kDefaultStrideLines * total_line_size;
+    block_size_ = total_line_size * image_height_;
+    stride_offset_ = stride_lines_ * total_line_size;
+    
     // Pre-allocate conversion buffer for 10-bit to 8-bit conversion
-    const gsize max_output_size = kImageWidth * kImageHeight;
+    const gsize max_output_size = image_width_ * image_height_;
     conversion_buffer_.reserve(max_output_size);
-
-    initialized_ = true;
-    return true;
+    
+    GST_DEBUG("CDG00Reader parameters recalculated: "
+              "channel=%d, stride_lines=%u, image_width=%u, image_height=%u, "
+              "block_size=%zu, stride_offset=%lld",
+              channel_, stride_lines_, image_width_, image_height_,
+              block_size_, (long long)stride_offset_);
 }
 
 bool CDG00Reader::ReadHeader() {
     // CDG0.0 format typically doesn't have a separate file header
     // Header information is embedded in each line header
     return true;
+}
+
+PropertyDefinitions CDG00Reader::GetPropertyDefinitions() const {
+    PropertyDefinitions defs;
+    
+    // Channel property (enum as integer)
+    PropertyDefinition channel_def;
+    channel_def.name = "channel";
+    channel_def.type = PROPERTY_TYPE_INTEGER;
+    channel_def.default_value = PropertyValue(static_cast<int>(CHANNEL_P));
+    channel_def.description = "Channel selection (0=P, 1=B1, 2=B2, 3=B3, 4=B4)";
+    channel_def.min_value = PropertyValue(static_cast<int>(CHANNEL_P));
+    channel_def.max_value = PropertyValue(static_cast<int>(CHANNEL_B4));
+    defs.push_back(channel_def);
+    
+    // Stride lines property
+    PropertyDefinition stride_def;
+    stride_def.name = "stride-lines";
+    stride_def.type = PROPERTY_TYPE_INTEGER;
+    stride_def.default_value = PropertyValue(static_cast<int>(kDefaultStrideLines));
+    stride_def.description = "Number of lines to stride per read";
+    stride_def.min_value = PropertyValue(1);
+    stride_def.max_value = PropertyValue(1024);
+    defs.push_back(stride_def);
+    
+    // Image height property
+    PropertyDefinition height_def;
+    height_def.name = "image-height";
+    height_def.type = PROPERTY_TYPE_INTEGER;
+    height_def.default_value = PropertyValue(static_cast<int>(kDefaultImageHeight));
+    height_def.description = "Height of the image to read";
+    height_def.min_value = PropertyValue(1);
+    height_def.max_value = PropertyValue(16384);
+    defs.push_back(height_def);
+    
+    return defs;
+}
+
+bool CDG00Reader::SetProperty(const std::string& name, const PropertyValue& value) {
+    if (name == "channel") {
+        int channel_val = value.Get<int>();
+        if (channel_val < CHANNEL_P || channel_val > CHANNEL_B4) {
+            GST_WARNING("Invalid channel value: %d", channel_val);
+            return false;
+        }
+        channel_ = static_cast<CDG00Channel>(channel_val);
+        GST_INFO("Channel set to: %d", channel_);
+        return true;
+    }
+    else if (name == "stride-lines") {
+        int stride_val = value.Get<int>();
+        if (stride_val < 1 || stride_val > 1024) {
+            GST_WARNING("Invalid stride-lines value: %d", stride_val);
+            return false;
+        }
+        stride_lines_ = static_cast<guint>(stride_val);
+        RecalculateParameters();
+        GST_INFO("Stride lines set to: %u", stride_lines_);
+        return true;
+    }
+    else if (name == "image-height") {
+        int height_val = value.Get<int>();
+        if (height_val < 1 || height_val > 16384) {
+            GST_WARNING("Invalid image-height value: %d", height_val);
+            return false;
+        }
+        image_height_ = static_cast<guint>(height_val);
+        RecalculateParameters();
+        GST_INFO("Image height set to: %u", image_height_);
+        return true;
+    }
+    
+    GST_WARNING("CDG00Reader: Property '%s' not found", name.c_str());
+    return false;
+}
+
+PropertyValue CDG00Reader::GetProperty(const std::string& name) const {
+    if (name == "channel") {
+        return PropertyValue(static_cast<int>(channel_));
+    }
+    else if (name == "stride-lines") {
+        return PropertyValue(static_cast<int>(stride_lines_));
+    }
+    else if (name == "image-height") {
+        return PropertyValue(static_cast<int>(image_height_));
+    }
+    
+    GST_WARNING("CDG00Reader: Property '%s' not found", name.c_str());
+    return PropertyValue("");
+}
+
+GstCaps* CDG00Reader::GetCaps() {
+    if (!initialized_) {
+        GST_WARNING("CDG00Reader not initialized, using default dimensions");
+    }
+    
+    // Create caps for GRAY8 format with current image dimensions
+    GstVideoInfo info;
+    gst_video_info_init(&info);
+    gst_video_info_set_format(&info, GST_VIDEO_FORMAT_GRAY8, 
+                              image_width_, image_height_);
+    
+    GstCaps* caps = gst_video_info_to_caps(&info);
+    
+    // Remove framerate to allow downstream negotiation
+    GstStructure* s = gst_caps_get_structure(caps, 0);
+    gst_structure_remove_field(s, "framerate");
+    
+    GST_INFO("CDG00Reader generated caps: %" GST_PTR_FORMAT 
+             " (width=%u, height=%u)", 
+             caps, image_width_, image_height_);
+    
+    return caps;
 }
 
 GstBuffer* CDG00Reader::ProcessFrame(const guint8* data,
@@ -70,30 +211,28 @@ GstBuffer* CDG00Reader::ProcessFrame(const guint8* data,
         return nullptr;
     }
 
-    // Check if we have enough data for a complete frame (block_size_)
-    if (size < block_size_) {
-        GST_WARNING("Insufficient data for CDG frame processing: got %zu, expected %zu", 
-                    size, block_size_);
+    // Allow processing of partial frames (e.g., last frame in file may be incomplete)
+    // Calculate line size to determine minimum required data
+    const gsize line_video_size = image_width_ * kPixelDepth / 8;
+    const gsize total_line_size = kLineHeaderSize + kLineParamSize + line_video_size + kLineDataPadding;
+    
+    if (size < total_line_size) {
+        GST_WARNING("Data size %zu is less than one complete line (%zu bytes), cannot process", 
+                    size, total_line_size);
         return nullptr;
     }
-
-    // Process the entire frame data (all lines)
-    return ProcessVideoData(data, size, caps);
-}
-
-void CDG00Reader::SetBinFileSrcProperty(BinFileSrc* src) {
-    if (!src) {
-        return;
+    
+    if (size < block_size_) {
+        GST_INFO("Partial frame detected: got %zu bytes, expected %zu (processing available data)", 
+                 size, block_size_);
     }
 
-    // Set CDG0.0 specific properties according to design specification
-    src->each_block_size = block_size_;       // Each data block size
-    src->stride_offset   = stride_offset_;    // Stride offset for reading
-    
-    // Set format-specific flags
-    src->has_header      = FALSE;             // No separate file header
-    src->header_size     = 0;                 // No header
+    // Process the frame data (all complete lines available)
+    // Currently only supports channel P (Panchromatic)
+    return ProcessVideoDataChannelP(data, size, caps);
 }
+
+// Note: SetBinFileSrcProperty removed - BinFileSrc now queries via GetBlockSize/GetStrideOffset
 
 void CDG00Reader::Close() {
     conversion_buffer_.clear();
@@ -134,16 +273,16 @@ bool CDG00Reader::ParseLineHeader(const guint8* data, CDG0LineHeader* header) {
     return true;
 }
 
-GstBuffer* CDG00Reader::ProcessVideoData(const guint8* data,
-                                         gsize         size,
-                                         GstCaps*      caps) {
+GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
+                                                 gsize         size,
+                                                 GstCaps*      caps) {
     if (!data || size == 0) {
         return nullptr;
     }
     // print caps
     GST_LOG("caps are %" GST_PTR_FORMAT, caps);
     // Calculate line sizes based on CDG format (same as demuxer.c)
-    const gsize line_video_size = kImageWidth * kPixelDepth / 8;
+    const gsize line_video_size = image_width_ * kPixelDepth / 8;
     const gsize total_line_size = kLineHeaderSize + kLineParamSize + line_video_size + kLineDataPadding;
     
     // Calculate expected number of lines
@@ -155,7 +294,7 @@ GstBuffer* CDG00Reader::ProcessVideoData(const guint8* data,
     }
     
     // Prepare output buffer for entire frame (all lines converted to 8-bit)
-    const gsize frame_output_size = kImageWidth * num_lines;  // 8-bit per pixel
+    const gsize frame_output_size = image_width_ * num_lines;  // 8-bit per pixel
     conversion_buffer_.resize(frame_output_size);
     
     gsize total_converted = 0;
@@ -207,17 +346,30 @@ GstBuffer* CDG00Reader::ProcessVideoData(const guint8* data,
         return nullptr;
     }
 
-    // Create GStreamer buffer for the complete frame
-    GstBuffer* buffer = gst_buffer_new_allocate(nullptr, total_converted, nullptr);
+    // Calculate expected frame size based on image dimensions
+    const gsize expected_frame_size = image_width_ * image_height_;
+    
+    // Create GStreamer buffer with expected size (may need padding)
+    GstBuffer* buffer = gst_buffer_new_allocate(nullptr, expected_frame_size, nullptr);
     if (!buffer) {
-        GST_ERROR("Failed to allocate GstBuffer of size %zu", total_converted);
+        GST_ERROR("Failed to allocate GstBuffer of size %zu", expected_frame_size);
         return nullptr;
     }
 
-    // Fill buffer with all converted frame data
+    // Fill buffer with converted frame data
     GstMapInfo map;
     if (gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
+        // Copy converted data
         std::memcpy(map.data, conversion_buffer_.data(), total_converted);
+        
+        // Pad with zeros if data is less than expected (e.g., last frame)
+        if (total_converted < expected_frame_size) {
+            gsize padding_size = expected_frame_size - total_converted;
+            std::memset(map.data + total_converted, 0, padding_size);
+            GST_INFO("Padded partial frame: %zu bytes converted, %zu bytes padded (total %zu)", 
+                     total_converted, padding_size, expected_frame_size);
+        }
+        
         gst_buffer_unmap(buffer, &map);
     } else {
         gst_buffer_unref(buffer);
@@ -225,8 +377,8 @@ GstBuffer* CDG00Reader::ProcessVideoData(const guint8* data,
         return nullptr;
     }
 
-    GST_DEBUG("Successfully processed frame: %u lines, %zu total bytes output", 
-              num_lines, total_converted);
+    GST_DEBUG("Successfully processed frame: %u lines converted, %zu total bytes output", 
+              num_lines, expected_frame_size);
 
     return buffer;
 }
