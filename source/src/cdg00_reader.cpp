@@ -5,14 +5,15 @@
  */
 
 #include "cdg00_reader.hpp"
-#include "format_factory.hpp"
-#include "bin_src_impl.hpp"
+
 #include <algorithm>
 #include <cstring>
-
-extern "C" {
 #include <gst/video/video.h>
-}
+
+#include "format_factory.hpp"
+#include "bin_src_impl.hpp"
+#include "meta_factory.hpp"
+#include "../unit/endian_macro.h"
 
 namespace msf {
 
@@ -58,12 +59,9 @@ bool CDG00Reader::Initialize() {
 void CDG00Reader::RecalculateParameters() {
     // Calculate block size based on CDG format
     // Each line: header + params + video data + padding
-    const gsize line_video_size = image_width_ * kPixelDepth / 8;
-    const gsize total_line_size =
-        kLineHeaderSize + kLineParamSize + line_video_size + kLineDataPadding;
 
-    block_size_ = total_line_size * image_height_;
-    stride_offset_ = stride_lines_ * total_line_size;
+    block_size_ = kLineDataSize * image_height_;
+    stride_offset_ = stride_lines_ * kLineDataSize;
     
     // Pre-allocate conversion buffer for 10-bit to 8-bit conversion
     const gsize max_output_size = image_width_ * image_height_;
@@ -213,12 +211,10 @@ GstBuffer* CDG00Reader::ProcessFrame(const guint8* data,
 
     // Allow processing of partial frames (e.g., last frame in file may be incomplete)
     // Calculate line size to determine minimum required data
-    const gsize line_video_size = image_width_ * kPixelDepth / 8;
-    const gsize total_line_size = kLineHeaderSize + kLineParamSize + line_video_size + kLineDataPadding;
     
-    if (size < total_line_size) {
+    if (size < kLineDataSize) {
         GST_WARNING("Data size %zu is less than one complete line (%zu bytes), cannot process", 
-                    size, total_line_size);
+                    size, kLineDataSize);
         return nullptr;
     }
     
@@ -229,7 +225,7 @@ GstBuffer* CDG00Reader::ProcessFrame(const guint8* data,
 
     // Process the frame data (all complete lines available)
     // Currently only supports channel P (Panchromatic)
-    return ProcessVideoDataChannelP(data, size, caps);
+    return ProcessVideoDataChannel(data, size, caps);
 }
 
 // Note: SetBinFileSrcProperty removed - BinFileSrc now queries via GetBlockSize/GetStrideOffset
@@ -247,33 +243,70 @@ gint64 CDG00Reader::GetStrideOffset() const {
     return stride_offset_;
 }
 
-bool CDG00Reader::ParseLineHeader(const guint8* data, CDG0LineHeader* header) {
-    if (!data || !header) {
+bool CDG00Reader::CheckLineHeader(const guint8* data, guint8& row_num) {
+    if (!data ) {
         return false;
     }
-
-    // Parse magic number (5 bytes)
-    header->magic = 0;
-    for (int i = 0; i < 5; ++i) {
-        header->magic |= (static_cast<guint64>(data[i]) << (i * 8));
+    // check header
+    if(memcmp(data, kMagicNumber, 5) != 0){
+        return false;
     }
-
-    // Parse row ID (3 bytes at offset 7)
-    header->row_id = 0;
-    for (int i = 0; i < 3; ++i) {
-        header->row_id |= (static_cast<guint32>(data[7 + i]) << (i * 8));
-    }
-
-    // Extract package index (low 4 bits of row_id)
-    header->package_index = header->row_id & 0x0F;
-
-    // Check if this is frame start (package_index == 0)
-    header->is_frame_start = (header->package_index == 0);
+    row_num = (data[9] & 0x0F);
 
     return true;
 }
 
-GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
+CDG00Parameter CDG00Reader::PaserMetaData(const guint8* data){
+    CDG00Parameter res;
+    res.channel_id = data[5];   // row_num
+    res.strip_num = data[6];
+    uint32_t temp;
+    std::memcpy(&temp, data + 6, 4);
+    res.row_num = (BSWAP32(temp) & 0X00FFFFFF);
+    std::memcpy(&temp, data + 10, 4);
+    res.camera_time.usec = BSWAP32(temp) >> 8;
+    // camera info
+    auto ptr_line0 = data + 16;
+    std::memcpy(&temp, ptr_line0, 4);
+    res.camera_time.sec = BSWAP32(temp);
+    res.time_sync_status = ptr_line0[4];
+    std::memcpy(&temp, ptr_line0 + 4, 4);
+    res.expose_time_ns = (BSWAP32(temp) >> 8) * 12.5;
+    // boardcast info
+    auto ptr_line14 = data + 16 + 14 * kLineDataSize;
+    res.gps_time.week = BSWAP16(*(guint16*)(ptr_line14));
+    std::memcpy(&temp, ptr_line14 + 2, 4);
+    res.gps_time.sec  = BSWAP32(temp);
+    uint32_t tmp32;
+    for (size_t i = 0; i < 3; i++){
+        std::memcpy(&temp, ptr_line14 + 6 + i * 4, 4);
+        tmp32 = BSWAP32(temp);
+        std::memcpy(&(res.lla[i]), &tmp32, 4);
+
+        std::memcpy(&temp, ptr_line14 + 18 + i * 4, 4);
+        tmp32 = BSWAP32(temp);
+        std::memcpy(&(res.velocity[i]), &tmp32, 4);
+    }
+    auto ptr_line15 = data + 16 + 15 * kLineDataSize;
+    uint8_t arry[4] = {
+        ptr_line14[30], ptr_line14[31], ptr_line15[0], ptr_line15[1] 
+    };
+    std::memcpy(&temp, arry, 4);
+    tmp32 = BSWAP32(temp);
+    std::memcpy(res.attitude, &tmp32, 4);
+
+    std::memcpy(&temp, ptr_line15 + 2, 4);
+    tmp32 = BSWAP32(temp);
+    std::memcpy(&(res.attitude[1]), &tmp32, 4);
+
+    std::memcpy(&temp, ptr_line15 + 6, 4);
+    tmp32 = BSWAP32(temp);
+    std::memcpy(&(res.attitude[2]), &tmp32, 4);
+    
+    return res;
+}
+
+GstBuffer* CDG00Reader::ProcessVideoDataChannel(const guint8* data,
                                                  gsize         size,
                                                  GstCaps*      caps) {
     if (!data || size == 0) {
@@ -283,13 +316,12 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
     GST_LOG("caps are %" GST_PTR_FORMAT, caps);
     // Calculate line sizes based on CDG format (same as demuxer.c)
     const gsize line_video_size = image_width_ * kPixelDepth / 8;
-    const gsize total_line_size = kLineHeaderSize + kLineParamSize + line_video_size + kLineDataPadding;
     
     // Calculate expected number of lines
-    const guint num_lines = size / total_line_size;
+    const guint num_lines = size / kLineDataSize;
     if (num_lines == 0) {
         GST_WARNING("Data size %zu too small for even one line (expected %zu per line)", 
-                    size, total_line_size);
+                    size, kLineDataSize);
         return nullptr;
     }
     
@@ -300,25 +332,35 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
     gsize total_converted = 0;
     const guint8* current_line_ptr = data;
     
-    GST_DEBUG("Processing %u lines, total_line_size=%zu, line_video_size=%zu", 
-              num_lines, total_line_size, line_video_size);
-    
+    GST_DEBUG("Processing %u lines, kLineDataSize=%zu, line_video_size=%zu", 
+              num_lines, kLineDataSize, line_video_size);
+    MetaCDG00Impl meta_cdg00;
     // Process each line in the frame
     for (guint line = 0; line < num_lines; ++line) {
         // Check if we have enough data for this line
-        if ((current_line_ptr - data) + total_line_size > size) {
+        if ((current_line_ptr - data) + kLineDataSize > size) {
             GST_WARNING("Insufficient data for line %u", line);
             break;
         }
         
         // Parse line header to verify data integrity
-        CDG0LineHeader line_header;
-        if (!ParseLineHeader(current_line_ptr, &line_header)) {
+        guint8 row_num = 0;
+        if (!CheckLineHeader(current_line_ptr, row_num)) {
             GST_DEBUG("Failed to parse header for line %u, skipping", line);
-            current_line_ptr += total_line_size;
+            current_line_ptr += kLineDataSize;
             continue;
         }
-        
+        // pick parameters && package them
+        if( line < 16  && 0 == row_num ){   // frist 16 lines
+            meta_cdg00.params[0] = PaserMetaData(current_line_ptr);
+        }
+        // last 16 lines complied package
+        else if( line + 32 > num_lines && line + 16 < num_lines  && 
+                0 == row_num)
+        {
+            meta_cdg00.params[1] = PaserMetaData(current_line_ptr);
+        }
+        else{;}
         // Skip to video data (past header and params)
         const guint8* line_video_data = current_line_ptr + kLineHeaderSize + kLineParamSize;
         
@@ -338,7 +380,7 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
         }
         
         // Move to next line
-        current_line_ptr += total_line_size;
+        current_line_ptr += kLineDataSize;
     }
     
     if (total_converted == 0) {
@@ -355,7 +397,6 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
         GST_ERROR("Failed to allocate GstBuffer of size %zu", expected_frame_size);
         return nullptr;
     }
-
     // Fill buffer with converted frame data
     GstMapInfo map;
     if (gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
@@ -376,10 +417,16 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannelP(const guint8* data,
         GST_ERROR("Failed to map GstBuffer for writing");
         return nullptr;
     }
-
     GST_DEBUG("Successfully processed frame: %u lines converted, %zu total bytes output", 
               num_lines, expected_frame_size);
 
+    // add meta
+    if(!MetaFactory::AddMetaToBuffer<MetaCDG00Impl>(buffer, meta_cdg00)){
+        GST_WARNING("Failed to add cdg00 meta to buffer");
+    }
+    else {
+        GST_DEBUG("Added cdg00 meta buffer");
+    }
     return buffer;
 }
 

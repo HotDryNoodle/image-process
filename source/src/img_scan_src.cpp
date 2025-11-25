@@ -3,7 +3,7 @@
  */
 
 #include "img_scan_src.hpp"
-#include "image_dir_meta.hpp"
+#include "meta_image_dir.hpp"
 #include "meta_factory.hpp"
 
 #include <opencv2/opencv.hpp>
@@ -316,7 +316,7 @@ static GstFlowReturn img_scan_src_create(GstPushSrc *pushsrc, GstBuffer **buf) {
     gst_caps_unref(caps);
     
     // Add ImageDirMeta
-    msf::ImageDirMetaImpl dir_meta;
+    msf::MetaImageDirImpl dir_meta;
     dir_meta.file_path = fs::absolute(current_file).string();
     
     // Compute relative path

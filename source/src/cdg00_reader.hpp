@@ -12,21 +12,22 @@
 #include <gst/gst.h>
 
 #include "format_reader_interface.hpp"
+#include "meta_cdg00_impl.hpp"
 
 namespace msf {
 
-// Forward declaration - we don't need the full BinFileSrc structure
-struct _BinFileSrc;
+// // Forward declaration - we don't need the full BinFileSrc structure
+// struct _BinFileSrc;
 
 /**
  * @brief Channel enumeration for CDG0.0 format
  */
 enum CDG00Channel {
     CHANNEL_P = 0,   // 全色谱
-    CHANNEL_B1 = 1,  // B1 谱段
-    CHANNEL_B2 = 2,  // B2 谱段
-    CHANNEL_B3 = 3,  // B3 谱段
-    CHANNEL_B4 = 4   // B4 谱段
+    CHANNEL_B1,  // B1 谱段
+    CHANNEL_B2,  // B2 谱段
+    CHANNEL_B3,  // B3 谱段
+    CHANNEL_B4   // B4 谱段
 };
 
 /**
@@ -60,20 +61,21 @@ public:
 protected:
     bool Initialize() override;
 
+private:
     /**
-     * @brief Parse CDG line header structure
-     * @param data Raw data pointer
-     * @param header Output header structure  
-     * @return true if parsed successfully
+     * @brief check param header
+     * @param data - pointer to the raw data
+     * @param row_num - row number lower 4 bits, valeu:[0, 15]
+     * @return true if header is valid, false otherwise
      */
-    struct CDG0LineHeader {
-        guint64  magic;            // 魔数 (实际5字节)
-        guint32  row_id;           // 行号标识 (实际3字节)
-        guint8   package_index;    // 包索引 (row_id的低4bit)
-        gboolean is_frame_start;   // 是否帧起始行
-    };
-    
-    bool ParseLineHeader(const guint8* data, CDG0LineHeader* header);
+    bool CheckLineHeader(const guint8* data, guint8& row_num);
+
+    /**
+     * @brief paser total 16lines of raw data and store them to package
+     * @param data - pointer to the raw data
+     * @return CDG00Parameter
+     */
+    CDG00Parameter PaserMetaData(const guint8* data);
 
     /**
      * @brief Process video data for channel P (Panchromatic)
@@ -82,8 +84,11 @@ protected:
      * @param caps GStreamer caps
      * @return Processed GstBuffer
      */
-    GstBuffer* ProcessVideoDataChannelP(const guint8* data, gsize size, GstCaps* caps);
-
+    GstBuffer* ProcessVideoDataChannel(const guint8* data, gsize size, GstCaps* caps);
+    
+    // Helper methods to recalculate based on properties
+    void RecalculateParameters();
+    
     /**
      * @brief Convert 10-bit packed data to 8-bit
      * @param input_data 10-bit packed data
@@ -97,15 +102,17 @@ protected:
                              guint8*       output_buffer,
                              gsize         output_size);
 
+private:
     // CDG0.0 format constants based on demuxer.c
     static constexpr gsize  kLineHeaderSize    = 16;    // MSF_LINE_HEADER_SIZE
     static constexpr gsize  kLineParamSize     = 32;    // MSF_LINE_PARAM_SIZE
+    static constexpr gsize  kLineDataSize      = 6448;
     static constexpr gsize  kLineDataPadding   = 1280;  // MSF_LINE_DATA_PANDDING
     static constexpr guint  kDefaultImageWidth  = 4096;
     static constexpr guint  kDefaultImageHeight = 4096;
     static constexpr guint  kPixelDepth        = 10;
     static constexpr gint64 kDefaultStrideLines = 32;   // 16line一包完整参数
-
+    static constexpr uint8_t kMagicNumber[5] = {0xFA, 0xF3, 0x34, 0x0A, 0x01}; // 魔数
     // Member variables
     bool                     initialized_;
     gsize                    block_size_;
@@ -117,9 +124,7 @@ protected:
     guint                    stride_lines_;     // 步长行数
     guint                    image_width_;      // 图像宽度
     guint                    image_height_;     // 图像高度
-    
-    // Helper methods to recalculate based on properties
-    void RecalculateParameters();
+
 };
 
 }  // namespace msf
