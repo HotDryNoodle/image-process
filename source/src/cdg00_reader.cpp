@@ -420,6 +420,11 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannel(const guint8* data,
     GST_DEBUG("Successfully processed frame: %u lines converted, %zu total bytes output", 
               num_lines, expected_frame_size);
 
+    // time stamp: meta_cdg00.params[0].expose_time_ns(纳秒) X  meta_cdg00.params[0].row_num
+    // GstClockTime pts  = meta_cdg00.params[0].row_num * meta_cdg00.params[0].expose_time_ns;
+    // GstClockTime dur  = image_height_ * meta_cdg00.params[0].expose_time_ns;  // 如果一帧只有一行，n_rows=1
+    // GST_BUFFER_PTS(buffer)      = pts;
+    // GST_BUFFER_DURATION(buffer) = dur;
     // add meta
     if(!MetaFactory::AddMetaToBuffer<MetaCDG00Impl>(buffer, meta_cdg00)){
         GST_WARNING("Failed to add cdg00 meta to buffer");
