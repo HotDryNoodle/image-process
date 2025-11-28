@@ -306,6 +306,21 @@ CDG00Parameter CDG00Reader::PaserMetaData(const guint8* data){
     return res;
 }
 
+#include <time.h>
+static GstClockTime
+get_monotonic_time(void)
+{
+    struct timespec ts;
+    
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (GstClockTime)ts.tv_sec * GST_SECOND + ts.tv_nsec;
+    }
+    
+    // 备选：使用实时时钟
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (GstClockTime)ts.tv_sec * GST_SECOND + ts.tv_nsec;
+}
+
 GstBuffer* CDG00Reader::ProcessVideoDataChannel(const guint8* data,
                                                  gsize         size,
                                                  GstCaps*      caps) {
@@ -423,7 +438,11 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannel(const guint8* data,
     // time stamp: meta_cdg00.params[0].expose_time_ns(纳秒) X  meta_cdg00.params[0].row_num
     // GstClockTime pts  = meta_cdg00.params[0].row_num * meta_cdg00.params[0].expose_time_ns;
     // GstClockTime dur  = image_height_ * meta_cdg00.params[0].expose_time_ns;  // 如果一帧只有一行，n_rows=1
-    // GST_BUFFER_PTS(buffer)      = pts;
+    static GstClockTime first_frame_time = 0;
+    if(0 == first_frame_time) {
+        first_frame_time = get_monotonic_time();
+    }
+    GST_BUFFER_PTS(buffer)      = get_monotonic_time() - first_frame_time;
     // GST_BUFFER_DURATION(buffer) = dur;
     // add meta
     if(!MetaFactory::AddMetaToBuffer<MetaCDG00Impl>(buffer, meta_cdg00)){
