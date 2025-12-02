@@ -186,7 +186,7 @@ static void img_scan_src_class_init(ImgScanSrcClass *klass) {
 
     static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src",
         GST_PAD_SRC, GST_PAD_ALWAYS,
-        GST_STATIC_CAPS("video/x-raw, format=RGB, width=[1,MAX], height=[1,MAX], framerate=0/1"));
+        GST_STATIC_CAPS("video/x-raw, format=(string){GRAY8, RGB}, width=[1,MAX], height=[1,MAX], framerate=0/1"));
     
     gst_element_class_add_static_pad_template(element_class, &src_template);
 
@@ -272,25 +272,22 @@ static GstFlowReturn img_scan_src_create(GstPushSrc *pushsrc, GstBuffer **buf) {
     fs::path current_file = impl->file_list[impl->current_index];
     impl->current_index++;
     
-    // Read image
-    cv::Mat img = cv::imread(current_file.string(), cv::IMREAD_COLOR);
+    // Read image (try as color first to detect format)
+    cv::Mat img = cv::imread(current_file.string(), cv::IMREAD_ANYCOLOR);
     if (img.empty()) {
         GST_WARNING_OBJECT(src, "Failed to read image: %s", current_file.c_str());
-        // Skip and try next? Or return error? GStreamer create expects one buffer or EOS/Error.
-        // We should try next recursively or return OK with empty buffer? No.
-        // We'll recursively call ourselves? No, stack overflow risk.
-        // We'll loop inside here? No, `create` is one push.
-        // For now, let's return custom flow to skip?
-        // Safest is to return a dummy buffer or error. I'll return GST_FLOW_ERROR for now.
-        // Actually, let's try to find next valid image in a loop here.
-        
-        // But for simplicity in this iteration, just warn and error.
-         return GST_FLOW_ERROR;
+        return GST_FLOW_ERROR;
     }
     
-    // Convert BGR to RGB (GStreamer usually prefers RGB or we set caps to BGR)
-    // Our caps said RGB.
-    cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
+    // Detect image format based on channels
+    bool is_grayscale = (img.channels() == 1);
+    const char* format_str = is_grayscale ? "GRAY8" : "RGB";
+    
+    // Convert color format if needed (only for color images)
+    if (!is_grayscale) {
+        // Convert BGR to RGB (OpenCV reads as BGR, GStreamer expects RGB)
+        cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
+    }
     
     // Create GstBuffer
     gsize size = img.total() * img.elemSize();
@@ -305,9 +302,9 @@ static GstFlowReturn img_scan_src_create(GstPushSrc *pushsrc, GstBuffer **buf) {
     GST_BUFFER_PTS(*buf) = GST_CLOCK_TIME_NONE;
     GST_BUFFER_DURATION(*buf) = GST_CLOCK_TIME_NONE;
     
-    // Set Caps
+    // Set Caps dynamically based on image format
     GstCaps *caps = gst_caps_new_simple("video/x-raw",
-        "format", G_TYPE_STRING, "RGB",
+        "format", G_TYPE_STRING, format_str,
         "width", G_TYPE_INT, img.cols,
         "height", G_TYPE_INT, img.rows,
         "framerate", GST_TYPE_FRACTION, 0, 1,

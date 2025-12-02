@@ -38,7 +38,9 @@ CDG00Reader::CDG00Reader()
       channel_(CHANNEL_P),
       stride_lines_(kDefaultStrideLines),
       image_width_(kDefaultImageWidth),
-      image_height_(kDefaultImageHeight) {
+      image_height_(kDefaultImageHeight),
+      fps_(kDefaultFps),
+      frame_count_(0) {
     Initialize();
 }
 
@@ -113,6 +115,16 @@ PropertyDefinitions CDG00Reader::GetPropertyDefinitions() const {
     height_def.max_value = PropertyValue(16384);
     defs.push_back(height_def);
     
+    // FPS property
+    PropertyDefinition fps_def;
+    fps_def.name = "fps";
+    fps_def.type = PROPERTY_TYPE_FLOAT;
+    fps_def.default_value = PropertyValue(kDefaultFps);
+    fps_def.description = "Frame rate for video playback (frames per second)";
+    fps_def.min_value = PropertyValue(0.1f);
+    fps_def.max_value = PropertyValue(1000.0f);
+    defs.push_back(fps_def);
+    
     return defs;
 }
 
@@ -149,6 +161,16 @@ bool CDG00Reader::SetProperty(const std::string& name, const PropertyValue& valu
         GST_INFO("Image height set to: %u", image_height_);
         return true;
     }
+    else if (name == "fps") {
+        float fps_val = value.Get<float>();
+        if (fps_val < 0.1f || fps_val > 1000.0f) {
+            GST_WARNING("Invalid fps value: %f (must be between 0.1 and 1000.0)", fps_val);
+            return false;
+        }
+        fps_ = fps_val;
+        GST_INFO("FPS set to: %f", fps_);
+        return true;
+    }
     
     GST_WARNING("CDG00Reader: Property '%s' not found", name.c_str());
     return false;
@@ -163,6 +185,9 @@ PropertyValue CDG00Reader::GetProperty(const std::string& name) const {
     }
     else if (name == "image-height") {
         return PropertyValue(static_cast<int>(image_height_));
+    }
+    else if (name == "fps") {
+        return PropertyValue(fps_);
     }
     
     GST_WARNING("CDG00Reader: Property '%s' not found", name.c_str());
@@ -233,6 +258,7 @@ GstBuffer* CDG00Reader::ProcessFrame(const guint8* data,
 void CDG00Reader::Close() {
     conversion_buffer_.clear();
     initialized_ = false;
+    frame_count_ = 0;  // Reset frame counter for next start
 }
 
 gsize CDG00Reader::GetBlockSize() const {
@@ -304,21 +330,6 @@ CDG00Parameter CDG00Reader::PaserMetaData(const guint8* data){
     std::memcpy(&(res.attitude[2]), &tmp32, 4);
     
     return res;
-}
-
-#include <time.h>
-static GstClockTime
-get_monotonic_time(void)
-{
-    struct timespec ts;
-    
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-        return (GstClockTime)ts.tv_sec * GST_SECOND + ts.tv_nsec;
-    }
-    
-    // 备选：使用实时时钟
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (GstClockTime)ts.tv_sec * GST_SECOND + ts.tv_nsec;
 }
 
 GstBuffer* CDG00Reader::ProcessVideoDataChannel(const guint8* data,
@@ -435,14 +446,15 @@ GstBuffer* CDG00Reader::ProcessVideoDataChannel(const guint8* data,
     GST_DEBUG("Successfully processed frame: %u lines converted, %zu total bytes output", 
               num_lines, expected_frame_size);
 
+    // Calculate PTS based on frame count and fps
+    // PTS = frame_count / fps
+    GST_BUFFER_PTS(buffer) = frame_count_ * (1.0f / fps_) * GST_SECOND;
+    frame_count_++;
+    
+    // Optional: Calculate duration based on actual data timing
     // time stamp: meta_cdg00.params[0].expose_time_ns(纳秒) X  meta_cdg00.params[0].row_num
     // GstClockTime pts  = meta_cdg00.params[0].row_num * meta_cdg00.params[0].expose_time_ns;
     // GstClockTime dur  = image_height_ * meta_cdg00.params[0].expose_time_ns;  // 如果一帧只有一行，n_rows=1
-    static GstClockTime first_frame_time = 0;
-    if(0 == first_frame_time) {
-        first_frame_time = get_monotonic_time();
-    }
-    GST_BUFFER_PTS(buffer)      = get_monotonic_time() - first_frame_time;
     // GST_BUFFER_DURATION(buffer) = dur;
     // add meta
     if(!MetaFactory::AddMetaToBuffer<MetaCDG00Impl>(buffer, meta_cdg00)){

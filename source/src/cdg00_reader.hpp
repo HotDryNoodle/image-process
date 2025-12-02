@@ -112,6 +112,7 @@ private:
     static constexpr guint  kDefaultImageHeight = 4096;
     static constexpr guint  kPixelDepth        = 10;
     static constexpr gint64 kDefaultStrideLines = 32;   // 16line一包完整参数
+    static constexpr gfloat kDefaultFps = 30.0f;        // 默认帧率
     static constexpr uint8_t kMagicNumber[5] = {0xFA, 0xF3, 0x34, 0x0A, 0x01}; // 魔数
     // Member variables
     bool                     initialized_;
@@ -124,6 +125,8 @@ private:
     guint                    stride_lines_;     // 步长行数
     guint                    image_width_;      // 图像宽度
     guint                    image_height_;     // 图像高度
+    gfloat                   fps_;              // 帧率参数
+    guint64                  frame_count_;      // 帧计数器
 
 };
 
