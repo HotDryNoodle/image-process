@@ -12,7 +12,7 @@
 
 #include "format_factory.hpp"
 #include "bin_src_impl.hpp"
-#include "meta_factory.hpp"
+#include "meta/meta_factory.hpp"
 #include "../unit/endian_macro.h"
 
 namespace msf {

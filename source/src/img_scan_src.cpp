@@ -3,8 +3,8 @@
  */
 
 #include "img_scan_src.hpp"
-#include "meta_image_dir.hpp"
-#include "meta_factory.hpp"
+#include "meta/meta_image_dir.hpp"
+#include "meta/meta_factory.hpp"
 
 #include <opencv2/opencv.hpp>
 #include <filesystem>

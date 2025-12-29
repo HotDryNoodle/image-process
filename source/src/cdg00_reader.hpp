@@ -12,7 +12,7 @@
 #include <gst/gst.h>
 
 #include "format_reader_interface.hpp"
-#include "meta_cdg00_impl.hpp"
+#include "meta/meta_cdg00_impl.hpp"
 
 namespace msf {
 
