@@ -7,13 +7,13 @@
 #include "meta/meta_factory.hpp"
 
 #include <opencv2/opencv.hpp>
-#include <filesystem>
+#include <experimental/filesystem>
 #include <vector>
 #include <string>
 #include <set>
 #include <algorithm>
 
-namespace fs = std::filesystem;
+namespace fs = std::experimental::filesystem;
 
 GST_DEBUG_CATEGORY_STATIC(img_scan_src_debug);
 #define GST_CAT_DEFAULT img_scan_src_debug
@@ -90,13 +90,13 @@ public:
         try {
             if (recursive) {
                 for (const auto& entry : fs::recursive_directory_iterator(directory)) {
-                    if (entry.is_regular_file() && IsValidExtension(entry.path())) {
+                    if ( fs::is_regular_file(entry.status()) && IsValidExtension(entry.path())) {
                         file_list.push_back(entry.path());
                     }
                 }
             } else {
                 for (const auto& entry : fs::directory_iterator(directory)) {
-                    if (entry.is_regular_file() && IsValidExtension(entry.path())) {
+                    if ( fs::is_regular_file(entry.status()) && IsValidExtension(entry.path())) {
                         file_list.push_back(entry.path());
                     }
                 }
@@ -260,6 +260,35 @@ static gboolean img_scan_src_stop(GstBaseSrc *basesrc) {
     return TRUE;
 }
 
+// 自己实现一个简化版 relative()
+fs::path my_relative(const fs::path& p, const fs::path& base)
+{
+    // 1. 统一转成绝对路径
+    fs::path abs_p    = fs::absolute(p);
+    fs::path abs_base = fs::absolute(base);
+
+    // 2. 逐个分量拆出来
+    std::vector<fs::path> vp, vbase;
+    for (auto& x : abs_p)    vp.push_back(x);
+    for (auto& x : abs_base) vbase.push_back(x);
+
+    // 3. 找公共前缀长度
+    std::size_t common = 0;
+    while (common < vp.size() && common < vbase.size() &&
+           vp[common] == vbase[common])
+        ++common;
+
+    // 4. 剩余部分拼 ../
+    fs::path rel;
+    for (std::size_t i = common; i < vbase.size(); ++i)
+        rel /= "..";
+
+    // 5. 追加 p 的剩余部分
+    for (std::size_t i = common; i < vp.size(); ++i)
+        rel /= vp[i];
+
+    return rel.empty() ? "." : rel;
+}
 static GstFlowReturn img_scan_src_create(GstPushSrc *pushsrc, GstBuffer **buf) {
     ImgScanSrc *src = GST_IMG_SCAN_SRC(pushsrc);
     ImgScanSrcImpl *impl = get_impl(src);
@@ -318,7 +347,7 @@ static GstFlowReturn img_scan_src_create(GstPushSrc *pushsrc, GstBuffer **buf) {
     
     // Compute relative path
     try {
-        dir_meta.rel_path = fs::relative(current_file, impl->directory).string();
+        dir_meta.rel_path = my_relative(current_file, impl->directory).string();
     } catch (...) {
         dir_meta.rel_path = current_file.filename().string();
     }
