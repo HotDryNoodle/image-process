@@ -23,12 +23,16 @@ enum {
     PROP_0,
     PROP_DIRECTORY,
     PROP_RECURSIVE,
-    PROP_EXTENSIONS
+    PROP_EXTENSIONS,
+    PROP_OUTPUT_WIDTH,
+    PROP_OUTPUT_HEIGHT
 };
 
 #define DEFAULT_DIRECTORY "."
 #define DEFAULT_RECURSIVE FALSE
 #define DEFAULT_EXTENSIONS "jpg,jpeg,png,bmp"
+#define DEFAULT_OUTPUT_WIDTH 0
+#define DEFAULT_OUTPUT_HEIGHT 0
 
 /* Private structure */
 struct ImgScanSrcPrivate {
@@ -55,7 +59,9 @@ public:
     std::string directory = DEFAULT_DIRECTORY;
     bool recursive = DEFAULT_RECURSIVE;
     std::string extensions_str = DEFAULT_EXTENSIONS;
-    
+    int output_width = 0;
+    int output_height = 0;
+
     std::vector<fs::path> file_list;
     size_t current_index = 0;
     std::set<std::string> valid_extensions;
@@ -181,6 +187,18 @@ static void img_scan_src_class_init(ImgScanSrcClass *klass) {
         g_param_spec_string("extensions", "Extensions", "Comma separated extensions",
             DEFAULT_EXTENSIONS, (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
+    g_object_class_install_property(gobject_class, PROP_OUTPUT_WIDTH,
+        g_param_spec_int("output-width", "Output Width",
+            "Resize all output images to this width (0 = keep original)",
+            0, G_MAXINT, DEFAULT_OUTPUT_WIDTH,
+            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+    g_object_class_install_property(gobject_class, PROP_OUTPUT_HEIGHT,
+        g_param_spec_int("output-height", "Output Height",
+            "Resize all output images to this height (0 = keep original)",
+            0, G_MAXINT, DEFAULT_OUTPUT_HEIGHT,
+            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
     gst_element_class_set_static_metadata(element_class,
         "Image Scan Source", "Source/Video", "Scans directory for images", "MSF Project");
 
@@ -214,6 +232,12 @@ static void img_scan_src_set_property(GObject *object, guint prop_id, const GVal
         case PROP_EXTENSIONS:
             impl->extensions_str = g_value_get_string(value);
             break;
+        case PROP_OUTPUT_WIDTH:
+            impl->output_width = g_value_get_int(value);
+            break;
+        case PROP_OUTPUT_HEIGHT:
+            impl->output_height = g_value_get_int(value);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -233,6 +257,12 @@ static void img_scan_src_get_property(GObject *object, guint prop_id, GValue *va
             break;
         case PROP_EXTENSIONS:
             g_value_set_string(value, impl->extensions_str.c_str());
+            break;
+        case PROP_OUTPUT_WIDTH:
+            g_value_set_int(value, impl->output_width);
+            break;
+        case PROP_OUTPUT_HEIGHT:
+            g_value_set_int(value, impl->output_height);
             break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -307,60 +337,71 @@ static GstFlowReturn img_scan_src_create(GstPushSrc *pushsrc, GstBuffer **buf) {
         GST_WARNING_OBJECT(src, "Failed to read image: %s", current_file.c_str());
         return GST_FLOW_ERROR;
     }
-    
+
     // Detect image format based on channels
     bool is_grayscale = (img.channels() == 1);
     const char* format_str = is_grayscale ? "GRAY8" : "RGB";
-    
+
     // Convert color format if needed (only for color images)
     if (!is_grayscale) {
         // Convert BGR to RGB (OpenCV reads as BGR, GStreamer expects RGB)
         cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
     }
-    
+
+    // Resize to fixed output dimensions if requested
+    int out_width = img.cols;
+    int out_height = img.rows;
+    if (impl->output_width > 0 && impl->output_height > 0) {
+        out_width = impl->output_width;
+        out_height = impl->output_height;
+        cv::Mat resized;
+        cv::resize(img, resized, cv::Size(out_width, out_height), 0, 0, cv::INTER_LINEAR);
+        img = std::move(resized);
+    }
+
     // Create GstBuffer
     gsize size = img.total() * img.elemSize();
     *buf = gst_buffer_new_allocate(NULL, size, NULL);
-    
+
     GstMapInfo map;
     gst_buffer_map(*buf, &map, GST_MAP_WRITE);
     std::memcpy(map.data, img.data, size);
     gst_buffer_unmap(*buf, &map);
-    
+
     // Set buffer properties
     GST_BUFFER_PTS(*buf) = GST_CLOCK_TIME_NONE;
     GST_BUFFER_DURATION(*buf) = GST_CLOCK_TIME_NONE;
-    
+
     // Set Caps dynamically based on image format
     GstCaps *caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, format_str,
-        "width", G_TYPE_INT, img.cols,
-        "height", G_TYPE_INT, img.rows,
+        "width", G_TYPE_INT, out_width,
+        "height", G_TYPE_INT, out_height,
         "framerate", GST_TYPE_FRACTION, 0, 1,
         NULL);
     gst_pad_set_caps(GST_BASE_SRC_PAD(src), caps);
     gst_caps_unref(caps);
-    
+
     // Add ImageDirMeta
     msf::MetaImageDirImpl dir_meta;
     dir_meta.file_path = fs::absolute(current_file).string();
-    
+
     // Compute relative path
     try {
         dir_meta.rel_path = my_relative(current_file, impl->directory).string();
     } catch (...) {
         dir_meta.rel_path = current_file.filename().string();
     }
-    
-    dir_meta.width = img.cols;
-    dir_meta.height = img.rows;
+
+    dir_meta.width = out_width;
+    dir_meta.height = out_height;
     dir_meta.format = current_file.extension().string();
     if (!dir_meta.format.empty() && dir_meta.format[0] == '.') dir_meta.format.erase(0, 1);
-    
+
     if (!msf::MetaFactory::AddMetaToBuffer(*buf, dir_meta)) {
         GST_WARNING_OBJECT(src, "Failed to add ImageDirMeta");
     }
-    
+
     return GST_FLOW_OK;
 }
 
