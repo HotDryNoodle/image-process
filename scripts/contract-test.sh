@@ -25,7 +25,7 @@ try:
 except ImportError:
     jsonschema = None
 if jsonschema is not None:
-    sdk_schema = json.loads((repo.parent.parent / "sdk/schemas/plugin_manifest.1.1.schema.json").read_text())
+    sdk_schema = json.loads((repo / "subprojects/satellite-plugin-sdk/schemas/plugin_manifest.1.1.schema.json").read_text())
     jsonschema.validate(manifest, sdk_schema)
 PY
 

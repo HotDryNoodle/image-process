@@ -13,11 +13,14 @@ The canonical repository is
 ## Development build
 
 ```sh
-ln -s ../../../sdk subprojects/satellite-plugin-sdk
 meson setup build
 meson compile -C build
 ./scripts/contract-test.sh build/image-process
 ```
+
+Meson obtains the SDK and JSON dependency from the pinned wraps. Workspace
+builds replace the SDK wrap with the parent repository's in-tree `sdk/` through
+the workspace bootstrap scripts.
 
 MSF factories are referenced by the `msf.*` profiles in
 `configs/runtime/profiles.json`. Make the matching MSF runtime bundle available
