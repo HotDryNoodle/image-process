@@ -5,9 +5,10 @@ controlled GStreamer pipelines from installed, allowlisted runtime profiles.
 Requests select a sensor, acquisition mode, and profile; they cannot provide raw
 pipeline strings, element names, plugin search paths, or model paths.
 
-The repository intentionally has no remote at this stage. The containing
-`satellite-workspace` checkout can build this local repository, while portable
-cross-machine acquisition remains a publication concern.
+The canonical repository is
+`https://github.com/HotDryNoodle/image-process.git`. The containing
+`satellite-workspace` consumes a pinned commit through its submodule and
+`VERSIONS.lock` entries.
 
 ## Development build
 

@@ -1,7 +1,7 @@
 # Repository Guidelines
 
-This is the standalone `image-process` tools plugin repository. It intentionally
-has no remote at the current stage.
+This is the standalone `image-process` tools plugin repository. Its canonical
+remote is `https://github.com/HotDryNoodle/image-process.git`.
 
 - Build with C++17 and Meson `warning_level=2`.
 - Follow the parent workspace `.clang-format` and C++ naming rules.
