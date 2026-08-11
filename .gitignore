@@ -1,6 +1,8 @@
 build/
 install/
 subprojects/satellite-plugin-sdk
+subprojects/satellite-workspace-sdk-*
+subprojects/nlohmann_json-*
 subprojects/packagecache/
 subprojects/.wraplock
 .DS_Store

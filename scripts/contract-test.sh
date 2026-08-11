@@ -25,7 +25,10 @@ try:
 except ImportError:
     jsonschema = None
 if jsonschema is not None:
-    sdk_schema = json.loads((repo / "subprojects/satellite-plugin-sdk/schemas/plugin_manifest.1.1.schema.json").read_text())
+    sdk_schema_paths = list((repo / "subprojects").glob("*/schemas/plugin_manifest.1.1.schema.json"))
+    sdk_schema_paths += list((repo / "subprojects").glob("*/sdk/schemas/plugin_manifest.1.1.schema.json"))
+    assert sdk_schema_paths, "plugin SDK schema not found under resolved subprojects"
+    sdk_schema = json.loads(sdk_schema_paths[0].read_text())
     jsonschema.validate(manifest, sdk_schema)
 PY
 

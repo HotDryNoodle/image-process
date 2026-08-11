@@ -7,6 +7,7 @@ project('image-process', 'cpp',
   ],
 )
 
+nlohmann_json_sp = subproject('nlohmann_json')
 sdk_sp = subproject('satellite-plugin-sdk')
 satellite_common_dep = sdk_sp.get_variable('satellite_common_dep')
 
