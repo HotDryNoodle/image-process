@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "request_id": "cdg00-stare-001",
+  "trace_id": "trace-cdg00-001",
+  "acquisition_mode": "stare",
+  "sensor": {"id": "cdg00"},
+  "input": {
+    "artifact_ref": "artifact://raw/cdg00/example",
+    "path": "/data/raw/cdg00/example.bin",
+    "media_type": "application/x-cdg00"
+  },
+  "processing": {"runtime_profile": "msf.cdg00.stare.v1"}
+}

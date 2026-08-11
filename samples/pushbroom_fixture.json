@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "request_id": "fixture-pushbroom-001",
+  "trace_id": "trace-fixture-001",
+  "acquisition_mode": "pushbroom",
+  "sensor": {"id": "fixture.synthetic"},
+  "input": {
+    "artifact_ref": "fixture://synthetic-bars",
+    "media_type": "application/x-image-fixture"
+  },
+  "processing": {"runtime_profile": "fixture.pushbroom.v1"}
+}

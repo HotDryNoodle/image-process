@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "request_id": "sample-pushbroom-msf-image-sequence",
+  "trace_id": "trace-pushbroom-msf-image-sequence",
+  "acquisition_mode": "pushbroom",
+  "sensor": {"id": "msf.image-sequence"},
+  "input": {
+    "artifact_ref": "file://samples/fixtures",
+    "media_type": "image/x-portable-graymap",
+    "path": "samples/fixtures"
+  },
+  "processing": {
+    "runtime_profile": "msf.image-sequence.pushbroom.v1"
+  }
+}

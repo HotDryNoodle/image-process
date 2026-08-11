@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satellite.local/schemas/image_process.output.schema.json",
+  "title": "ImageProcessResult",
+  "type": "object",
+  "required": ["schema_version", "status", "request_id", "runtime_profile", "pipeline_plan"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "status": {"enum": ["dry_run", "completed", "no_result", "failed"]},
+    "request_id": {"type": "string"},
+    "trace_id": {"type": ["string", "null"]},
+    "runtime_profile": {"type": "string"},
+    "pipeline_plan": {"type": "object"},
+    "frame_count": {"type": "integer", "minimum": 0},
+    "artifact": {
+      "type": "object",
+      "required": ["path", "media_type", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string"},
+        "media_type": {"const": "application/x-tar"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "provenance": {"type": "object"}
+  },
+  "additionalProperties": false
+}

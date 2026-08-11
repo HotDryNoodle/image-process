@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "profiles": {
+    "fixture.pushbroom.v1": {
+      "evidence_class": "synthetic",
+      "sensor_id": "fixture.synthetic",
+      "acquisition_mode": "pushbroom",
+      "source": {
+        "factory": "videotestsrc",
+        "properties": {"is-live": false, "num-buffers": 2}
+      },
+      "filter": {
+        "factory": "identity",
+        "role": "detection_fixture",
+        "properties": {"silent": true}
+      },
+      "max_frames": 2,
+      "timeout_sec": 10
+    },
+    "msf.image-sequence.pushbroom.v1": {
+      "evidence_class": "development",
+      "sensor_id": "msf.image-sequence",
+      "acquisition_mode": "pushbroom",
+      "source": {
+        "factory": "ImgScanSrc",
+        "input_path_property": "directory",
+        "properties": {"recursive": false, "extensions": "jpg,jpeg,png,bmp,tiff,pgm"}
+      },
+      "filter": {
+        "factory": "ImageFilterTest",
+        "role": "detection",
+        "properties": {}
+      },
+      "max_frames": 512,
+      "timeout_sec": 120
+    },
+    "msf.cdg00.pushbroom.v1": {
+      "evidence_class": "development",
+      "sensor_id": "cdg00",
+      "acquisition_mode": "pushbroom",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {}
+      },
+      "filter": {
+        "factory": "Yolov8Detection",
+        "role": "detection",
+        "properties": {}
+      },
+      "max_frames": 512,
+      "timeout_sec": 120
+    },
+    "msf.cdg00.stare.v1": {
+      "evidence_class": "development",
+      "sensor_id": "cdg00",
+      "acquisition_mode": "stare",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {}
+      },
+      "filter": {
+        "factory": "DeepSortTracking",
+        "role": "tracking",
+        "properties": {}
+      },
+      "max_frames": 512,
+      "timeout_sec": 120
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.1",
+  "name": "image.process",
+  "executable": "image-process",
+  "version": "0.1.0",
+  "description": "Process existing image artifacts with allowlisted GStreamer pipelines",
+  "domain": "image",
+  "safety_class": "planning_only",
+  "commands": ["manifest", "validate", "run"],
+  "scenarios": ["pushbroom_detection", "stare_tracking"],
+  "input_schema_path": "schemas/image_process.input.schema.json",
+  "output_schema_path": "schemas/image_process.output.schema.json",
+  "capabilities": {
+    "kind": "compute",
+    "side_effect_class": "none",
+    "relocatable": true,
+    "deterministic": false,
+    "idempotent": true,
+    "retryable": true,
+    "consumes": ["RawImageArtifact"],
+    "produces": ["ProcessedImageArtifact", "ImageMetaSet"],
+    "hardware_tag": "image.gstreamer",
+    "timeout_sec": 300,
+    "compensation": null,
+    "cost_hint": {"typical_latency_sec": 30},
+    "async": false,
+    "dry_run": true,
+    "cancel": "process_signal",
+    "requires_gmat": false,
+    "requires_hardware": false,
+    "batch": true
+  },
+  "resource_limits": {
+    "timeout_sec": 300,
+    "max_parallel": 1,
+    "max_work_dir_mb": 4096
+  },
+  "agent_hints": {
+    "when_to_use": "Run detection for pushbroom imagery or tracking for stare imagery after raw artifact capture",
+    "prerequisites": ["raw_image_artifact_available", "runtime_profile_installed"],
+    "typical_latency_sec": 30,
+    "compose_with": ["access.remote_sensing_access"]
+  }
+}

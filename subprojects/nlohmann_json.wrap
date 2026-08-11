@@ -1,0 +1,2 @@
+[wrap-redirect]
+filename = satellite-plugin-sdk/subprojects/nlohmann_json.wrap
