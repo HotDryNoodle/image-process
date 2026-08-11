@@ -20,7 +20,9 @@ meson compile -C build
 
 Meson obtains the SDK and JSON dependency from the pinned wraps. Workspace
 builds replace the SDK wrap with the parent repository's in-tree `sdk/` through
-the workspace bootstrap scripts.
+the workspace bootstrap scripts. A standalone build requires the pinned private
+SDK repository to exist and be accessible; until that repository is published,
+use the workspace build rather than changing or bypassing the SDK pin.
 
 MSF factories are referenced by the `msf.*` profiles in
 `configs/runtime/profiles.json`. Make the matching MSF runtime bundle available
