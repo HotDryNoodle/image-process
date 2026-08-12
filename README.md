@@ -43,8 +43,9 @@ The request schema deliberately contains no plugin-path field.
 ## Host CDG0.0 real-data test
 
 The host-only parse profile reuses MSF `CDG00Src`, scales the decoded frames to
-1024×1024, and writes an H.264/MP4 `video.mp4` through the required GStreamer
-`x264enc` element. It also writes concise `meta/cdg00.jsonl` records containing
+1024×1024, and writes an Ogg/Theora `video.ogv` through the same GStreamer
+`theoraenc ! oggmux` path used by openEuler. It also writes concise
+`meta/cdg00.jsonl` records containing
 only frame id, GPS time, LLA, velocity, and roll/pitch/yaw values from the MSF
 window-start sample. Zero navigation values are passed through but do not imply
 valid navigation data. The profile does not enable detection or tracking models
@@ -60,7 +61,7 @@ export GST_PLUGIN_PATH="$IMAGE_PROCESS_GST_PLUGIN_PATH:${GST_PLUGIN_PATH:-}"
 ```
 
 The test pins the fixture basename, size, and SHA-256, runs to EOS, validates
-all 64 encoded frames and concise metadata records, verifies the MP4 with both
-GStreamer and FFmpeg tooling, and exercises bad-digest, symlink-input, and
-frame-limit failures. The final work directory contains only `video.mp4`,
-`meta/cdg00.jsonl`, `result.json`, and `pipeline-plan.json`.
+all 64 encoded frames and concise metadata records, verifies Ogg/Theora with
+GStreamer decode-to-EOS and FFmpeg tooling, and exercises bad-digest,
+symlink-input, and frame-limit failures. The final work directory contains only
+`video.ogv`, `meta/cdg00.jsonl`, `result.json`, and `pipeline-plan.json`.

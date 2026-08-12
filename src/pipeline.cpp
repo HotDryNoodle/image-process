@@ -510,6 +510,16 @@ ProcessedFrame copy_sample(GstSample* sample, std::size_t index) {
 
 Json make_pipeline_plan(const Json& profile) {
     if (profile.value("output_mode", "") == "ground_cdg00") {
+        Json video_plan = {
+            {"convert", profile.at("video").at("convert")},
+            {"scale", profile.at("video").at("scale")},
+            {"caps", profile.at("video").at("caps")},
+            {"encoder", profile.at("video").at("encoder")},
+            {"muxer", profile.at("video").at("muxer")},
+            {"sink", {{"factory", "filesink"}, {"path", "video.ogv"}}}};
+        if (profile.at("video").contains("parser")) {
+            video_plan["parser"] = profile.at("video").at("parser");
+        }
         return {
             {"source",
              {{"factory", profile.at("source").at("factory")},
@@ -529,14 +539,7 @@ Json make_pipeline_plan(const Json& profile) {
                 {"frame", "source"},
                 {"units", "source"},
                 {"zero_values_do_not_imply_valid", true}}}}},
-            {"video",
-             {{"convert", profile.at("video").at("convert")},
-              {"scale", profile.at("video").at("scale")},
-              {"caps", profile.at("video").at("caps")},
-              {"encoder", profile.at("video").at("encoder")},
-              {"parser", profile.at("video").at("parser")},
-              {"muxer", profile.at("video").at("muxer")},
-              {"sink", {{"factory", "filesink"}, {"path", "video.mp4"}}}}},
+            {"video", video_plan},
             {"output_mode", "ground_cdg00"},
             {"evidence_class", profile.at("evidence_class")}};
     }
@@ -567,9 +570,15 @@ void preflight_pipeline(const Json& profile) {
     require_factory(profile.at("filter").at("factory").get<std::string>());
     if (profile.value("output_mode", "") == "ground_cdg00") {
         for (const std::string& section :
-             {"convert", "scale", "encoder", "parser", "muxer"}) {
+             {"convert", "scale", "encoder", "muxer"}) {
             require_factory(profile.at("video")
                                 .at(section)
+                                .at("factory")
+                                .get<std::string>());
+        }
+        if (profile.at("video").contains("parser")) {
+            require_factory(profile.at("video")
+                                .at("parser")
                                 .at("factory")
                                 .get<std::string>());
         }
@@ -747,11 +756,13 @@ PipelineResult run_ground_cdg00_pipeline(
     const std::string encoder_name =
         video.at("encoder").at("factory").get<std::string>();
     const std::string parser_name =
-        video.at("parser").at("factory").get<std::string>();
+        video.contains("parser")
+            ? video.at("parser").at("factory").get<std::string>()
+            : "";
     const std::string muxer_name =
         video.at("muxer").at("factory").get<std::string>();
 
-    GstElement* pipeline = gst_pipeline_new("image-process-cdg00-x264");
+    GstElement* pipeline = gst_pipeline_new("image-process-cdg00-ground");
     GstElement* source =
         gst_element_factory_make(source_name.c_str(), "source");
     GstElement* probe =
@@ -765,16 +776,17 @@ PipelineResult run_ground_cdg00_pipeline(
     GstElement* encoder =
         gst_element_factory_make(encoder_name.c_str(), "video-encoder");
     GstElement* parser =
-        gst_element_factory_make(parser_name.c_str(), "h264-parser");
+        parser_name.empty()
+            ? nullptr
+            : gst_element_factory_make(parser_name.c_str(), "stream-parser");
     GstElement* muxer =
-        gst_element_factory_make(muxer_name.c_str(), "mp4-muxer");
+        gst_element_factory_make(muxer_name.c_str(), "video-muxer");
     GstElement* sink = gst_element_factory_make("filesink", "video-sink");
-    const std::array<GstElement*, 9> elements = {pipeline, source, probe,
-                                                 convert,  scale,  caps_filter,
-                                                 encoder,  parser, muxer};
+    const std::array<GstElement*, 8> elements = {
+        pipeline, source, probe, convert, scale, caps_filter, encoder, muxer};
     if (std::any_of(elements.begin(), elements.end(),
                     [](GstElement* element) { return element == nullptr; }) ||
-        sink == nullptr) {
+        sink == nullptr || (!parser_name.empty() && parser == nullptr)) {
         if (pipeline != nullptr) { gst_object_unref(pipeline); }
         for (GstElement* element : {source, probe, convert, scale, caps_filter,
                                     encoder, parser, muxer, sink}) {
@@ -782,11 +794,17 @@ PipelineResult run_ground_cdg00_pipeline(
         }
         throw ImageProcessError(
             satellite::EXIT_DEPENDENCY,
-            "failed to instantiate approved CDG0.0 x264 pipeline");
+            "failed to instantiate approved CDG0.0 ground pipeline");
     }
 
-    gst_bin_add_many(GST_BIN(pipeline), source, probe, convert, scale,
-                     caps_filter, encoder, parser, muxer, sink, nullptr);
+    if (parser != nullptr) {
+        gst_bin_add_many(GST_BIN(pipeline), source, probe, convert, scale,
+                         caps_filter, encoder, parser, muxer, sink, nullptr);
+    }
+    else {
+        gst_bin_add_many(GST_BIN(pipeline), source, probe, convert, scale,
+                         caps_filter, encoder, muxer, sink, nullptr);
+    }
     GroundProbeContext probe_context;
     probe_context.max_frames = max_frames;
     probe_context.consumer   = metadata_consumer;
@@ -829,7 +847,9 @@ PipelineResult run_ground_cdg00_pipeline(
         apply_properties(convert, video.at("convert").at("properties"));
         apply_properties(scale, video.at("scale").at("properties"));
         apply_properties(encoder, video.at("encoder").at("properties"));
-        apply_properties(parser, video.at("parser").at("properties"));
+        if (parser != nullptr) {
+            apply_properties(parser, video.at("parser").at("properties"));
+        }
         apply_properties(muxer, video.at("muxer").at("properties"));
         set_property(sink, "location", video_partial.string());
         set_property(sink, "sync", false);
@@ -845,16 +865,23 @@ PipelineResult run_ground_cdg00_pipeline(
         g_object_set(G_OBJECT(caps_filter), "caps", caps, nullptr);
         gst_caps_unref(caps);
 
-        if (!gst_element_link_many(source, probe, convert, scale, caps_filter,
-                                   encoder, parser, muxer, sink, nullptr)) {
+        const bool linked =
+            parser != nullptr
+                ? gst_element_link_many(source, probe, convert, scale,
+                                        caps_filter, encoder, parser, muxer,
+                                        sink, nullptr)
+                : gst_element_link_many(source, probe, convert, scale,
+                                        caps_filter, encoder, muxer, sink,
+                                        nullptr);
+        if (!linked) {
             throw ImageProcessError(
                 satellite::EXIT_DEPENDENCY,
-                "approved CDG0.0 x264 elements cannot negotiate a pipeline");
+                "approved CDG0.0 ground elements cannot negotiate a pipeline");
         }
         if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
             GST_STATE_CHANGE_FAILURE) {
             throw ImageProcessError(satellite::EXIT_RETRYABLE,
-                                    "CDG0.0 x264 pipeline failed to enter "
+                                    "CDG0.0 ground pipeline failed to enter "
                                     "PLAYING state");
         }
 
@@ -884,7 +911,7 @@ PipelineResult run_ground_cdg00_pipeline(
                     gst_object_unref(bus);
                     throw ImageProcessError(
                         satellite::EXIT_RETRYABLE,
-                        "GStreamer CDG0.0 x264 pipeline error: " + detail);
+                        "GStreamer CDG0.0 ground pipeline error: " + detail);
                 }
                 done = true;
                 gst_message_unref(message);
@@ -894,7 +921,7 @@ PipelineResult run_ground_cdg00_pipeline(
                 gst_object_unref(bus);
                 throw ImageProcessError(
                     satellite::EXIT_RETRYABLE,
-                    "GStreamer CDG0.0 x264 pipeline timed out");
+                    "GStreamer CDG0.0 ground pipeline timed out");
             }
         }
         gst_object_unref(bus);
@@ -907,15 +934,17 @@ PipelineResult run_ground_cdg00_pipeline(
             result.first_frame_metadata = probe_context.first_metadata;
             result.last_frame_metadata  = probe_context.last_metadata;
         }
-        result.provenance     = {{"gstreamer_version", gst_version_string()},
-                                 {"source", factory_provenance(source_name)},
-                                 {"metadata_probe", factory_provenance(probe_name)},
-                                 {"convert", factory_provenance(convert_name)},
-                                 {"scale", factory_provenance(scale_name)},
-                                 {"encoder", factory_provenance(encoder_name)},
-                                 {"parser", factory_provenance(parser_name)},
-                                 {"muxer", factory_provenance(muxer_name)},
-                                 {"evidence_class", profile.at("evidence_class")}};
+        result.provenance = {{"gstreamer_version", gst_version_string()},
+                             {"source", factory_provenance(source_name)},
+                             {"metadata_probe", factory_provenance(probe_name)},
+                             {"convert", factory_provenance(convert_name)},
+                             {"scale", factory_provenance(scale_name)},
+                             {"encoder", factory_provenance(encoder_name)},
+                             {"muxer", factory_provenance(muxer_name)},
+                             {"evidence_class", profile.at("evidence_class")}};
+        if (!parser_name.empty()) {
+            result.provenance["parser"] = factory_provenance(parser_name);
+        }
         result.resource_usage = resource_sampler.finish();
         cleanup();
         return result;

@@ -66,18 +66,15 @@
           "framerate_den": 1
         },
         "encoder": {
-          "factory": "x264enc",
+          "factory": "theoraenc",
           "properties": {
             "bitrate": 6000,
-            "speed-preset": "veryfast",
-            "tune": "zerolatency",
-            "key-int-max": 30,
-            "threads": 0,
-            "byte-stream": false
+            "speed-level": 3,
+            "keyframe-force": 30,
+            "drop-frames": false
           }
         },
-        "parser": {"factory": "h264parse", "properties": {"config-interval": -1}},
-        "muxer": {"factory": "mp4mux", "properties": {"faststart": true}}
+        "muxer": {"factory": "oggmux", "properties": {}}
       },
       "max_frames": 64,
       "timeout_sec": 300

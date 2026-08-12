@@ -55,10 +55,10 @@ PipelineResult run_pipeline(const Json&                  profile,
                             const FrameConsumer&         consumer);
 
 /**
- * @brief Run the approved CDG0.0 to x264/MP4 host pipeline.
+ * @brief Run the approved CDG0.0 ground observation-video pipeline.
  * @param profile Trusted ground CDG0.0 registry entry.
  * @param input_path Existing CDG0.0 input file.
- * @param video_partial Partial MP4 path owned by the caller.
+ * @param video_partial Partial observation-video path owned by the caller.
  * @param max_frames Maximum encoded input frames before fail-closed.
  * @param metadata_consumer Receives one concise metadata object per frame.
  * @return Frame count, provenance, and resource usage.

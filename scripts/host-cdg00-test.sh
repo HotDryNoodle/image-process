@@ -22,7 +22,7 @@ test "${actual_name}" = "${expected_name}"
 test "${actual_size}" = "${expected_size}"
 test "${actual_sha256}" = "${expected_sha256}"
 
-for command in python3 ffprobe gst-discoverer-1.0; do
+for command in python3 ffprobe gst-discoverer-1.0 gst-launch-1.0; do
   command -v "${command}" >/dev/null || {
     echo "error: required host validator is missing: ${command}" >&2
     exit 1
@@ -91,7 +91,8 @@ set -e
 test "${bad_digest_status}" -eq 2
 test "${frame_limit_status}" -eq 5
 test -z "$(find "${test_root}/bad-digest" "${test_root}/frame-limit" \
-  -type f \( -name '*.partial' -o -name 'video.mp4' -o -name 'product.bin' \) \
+  -type f \( -name '*.partial' -o -name 'video.ogv' -o -name 'video.mp4' \
+    -o -name 'product.bin' \) \
   -print 2>/dev/null)"
 
 ln -s "${data_file}" "${test_root}/${expected_name}"
@@ -114,11 +115,13 @@ test "${symlink_status}" -eq 2
 run_image_process "${request}" "${work_dir}" "${test_root}/stdout.json" \
   "${test_root}/run.err"
 
-gst-discoverer-1.0 "${work_dir}/video.mp4" \
+gst-discoverer-1.0 "${work_dir}/video.ogv" \
   >"${test_root}/gst-discoverer.txt"
+gst-launch-1.0 -q filesrc location="${work_dir}/video.ogv" \
+  ! oggdemux ! theoradec ! fakesink
 ffprobe -v error -count_frames -select_streams v:0 \
   -show_entries stream=codec_name,width,height,r_frame_rate,nb_read_frames \
-  -of json "${work_dir}/video.mp4" >"${test_root}/ffprobe.json"
+  -of json "${work_dir}/video.ogv" >"${test_root}/ffprobe.json"
 
 python3 - "${work_dir}" "${test_root}/stdout.json" "${data_file}" \
   "${repo_dir}" "${test_root}/ffprobe.json" <<'PY'
@@ -153,17 +156,17 @@ assert plan["video"]["caps"] == {
     "framerate_num": 30,
     "framerate_den": 1,
 }
-assert plan["video"]["encoder"]["factory"] == "x264enc"
+assert plan["video"]["encoder"]["factory"] == "theoraenc"
 assert plan["video"]["encoder"]["properties"] == {
     "bitrate": 6000,
-    "byte-stream": False,
-    "key-int-max": 30,
-    "speed-preset": "veryfast",
-    "threads": 0,
-    "tune": "zerolatency",
+    "drop-frames": False,
+    "keyframe-force": 30,
+    "speed-level": 3,
 }
+assert "parser" not in plan["video"]
+assert plan["video"]["muxer"] == {"factory": "oggmux", "properties": {}}
 
-video = work / "video.mp4"
+video = work / "video.ogv"
 metadata = work / "meta/cdg00.jsonl"
 result = work / "result.json"
 plan_file = work / "pipeline-plan.json"
@@ -180,7 +183,7 @@ assert not (work / "product.bin").exists()
 streams = ffprobe["streams"]
 assert len(streams) == 1, streams
 stream = streams[0]
-assert stream["codec_name"] == "h264"
+assert stream["codec_name"] == "theora"
 assert stream["width"] == 1024 and stream["height"] == 1024
 assert stream["r_frame_rate"] == "30/1"
 assert int(stream["nb_read_frames"]) == 64
@@ -217,7 +220,7 @@ for key, path in (("artifact", video), ("meta_artifact", metadata)):
     assert (work / entry["path"]) == path
     assert entry["size_bytes"] == path.stat().st_size
     assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]
-assert stdout["artifact"]["media_type"] == "video/mp4;codecs=avc1"
+assert stdout["artifact"]["media_type"] == "video/ogg;codecs=theora"
 assert stdout["meta_artifact"]["media_type"] == "application/x-ndjson"
 
 try:

@@ -75,8 +75,8 @@ Json sanitized_input_artifact(const Json& input) {
 class GroundCdg00Collector {
   public:
     explicit GroundCdg00Collector(const std::filesystem::path& work_dir)
-        : video_partial_(work_dir / "video.mp4.partial"),
-          video_final_(work_dir / "video.mp4"),
+        : video_partial_(work_dir / "video.ogv.partial"),
+          video_final_(work_dir / "video.ogv"),
           metadata_partial_(work_dir / "meta" / "cdg00.jsonl.partial"),
           metadata_final_(work_dir / "meta" / "cdg00.jsonl") {
         std::filesystem::create_directories(work_dir / "meta");
@@ -146,8 +146,8 @@ class GroundCdg00Collector {
         published_ = true;
 
         return {{"video",
-                 {{"path", "video.mp4"},
-                  {"media_type", "video/mp4;codecs=avc1"},
+                 {{"path", "video.ogv"},
+                  {"media_type", "video/ogg;codecs=theora"},
                   {"size_bytes", std::filesystem::file_size(video_final_)},
                   {"sha256", sha256_file(video_final_)}}},
                 {"metadata",
@@ -486,7 +486,8 @@ Json run(const Json&                  request,
     std::unique_ptr<GroundCdg00Collector> ground_collector;
     if (ground_cdg00) {
         for (const auto& path :
-             {work_dir / "video.mp4", work_dir / "video.mp4.partial",
+             {work_dir / "video.ogv", work_dir / "video.ogv.partial",
+              work_dir / "video.mp4", work_dir / "video.mp4.partial",
               work_dir / "meta" / "cdg00.jsonl",
               work_dir / "meta" / "cdg00.jsonl.partial",
               work_dir / "result.json", work_dir / "pipeline-plan.json"}) {
