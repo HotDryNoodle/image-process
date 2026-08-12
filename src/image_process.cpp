@@ -2,7 +2,9 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <set>
+#include <vector>
 
 #include "artifact.hpp"
 #include "pipeline.hpp"
@@ -56,6 +58,144 @@ std::string require_string(const Json&        object,
         return {};
     }
     return object.at(name).get<std::string>();
+}
+
+Json sanitized_input_artifact(const Json& input) {
+    Json sanitized = input;
+    if (sanitized.contains("path")) {
+        sanitized["basename"] =
+            std::filesystem::path(sanitized.at("path").get<std::string>())
+                .filename()
+                .string();
+        sanitized.erase("path");
+    }
+    return sanitized;
+}
+
+class GroundCdg00Collector {
+  public:
+    explicit GroundCdg00Collector(const std::filesystem::path& work_dir)
+        : video_partial_(work_dir / "video.mp4.partial"),
+          video_final_(work_dir / "video.mp4"),
+          metadata_partial_(work_dir / "meta" / "cdg00.jsonl.partial"),
+          metadata_final_(work_dir / "meta" / "cdg00.jsonl") {
+        std::filesystem::create_directories(work_dir / "meta");
+        metadata_output_.open(metadata_partial_,
+                              std::ios::binary | std::ios::trunc);
+        if (!metadata_output_) {
+            throw ImageProcessError(satellite::EXIT_FATAL,
+                                    "cannot create ground CDG0.0 outputs");
+        }
+    }
+
+    GroundCdg00Collector(const GroundCdg00Collector&)            = delete;
+    GroundCdg00Collector& operator=(const GroundCdg00Collector&) = delete;
+
+    ~GroundCdg00Collector() {
+        metadata_output_.close();
+        if (!published_) {
+            std::error_code ignored;
+            std::filesystem::remove(video_partial_, ignored);
+            std::filesystem::remove(metadata_partial_, ignored);
+        }
+    }
+
+    void consume(const Json& metadata) {
+        const std::set<std::string> expected = {"frame_id", "gps_time", "lla",
+                                                "rpy", "velocity"};
+        std::string                 unexpected;
+        if (!metadata.is_object() ||
+            !has_only_keys(metadata, expected, unexpected) ||
+            metadata.size() != expected.size()) {
+            throw ImageProcessError(
+                satellite::EXIT_FATAL,
+                "ground CDG0.0 metadata violates the concise contract");
+        }
+        if (metadata.at("frame_id").get<std::size_t>() != frame_count_) {
+            throw ImageProcessError(satellite::EXIT_FATAL,
+                                    "ground CDG0.0 metadata frame sequence is "
+                                    "not contiguous");
+        }
+        metadata_output_ << metadata.dump() << '\n';
+        if (!metadata_output_) {
+            throw ImageProcessError(
+                satellite::EXIT_FATAL,
+                "failed while streaming ground CDG0.0 outputs");
+        }
+        ++frame_count_;
+    }
+
+    Json publish() {
+        metadata_output_.flush();
+        if (!metadata_output_) {
+            throw ImageProcessError(satellite::EXIT_FATAL,
+                                    "failed to flush ground CDG0.0 outputs");
+        }
+        metadata_output_.close();
+        try {
+            publish_partial_file(metadata_partial_, metadata_final_);
+            publish_partial_file(video_partial_, video_final_);
+        } catch (...) {
+            std::error_code ignored;
+            std::filesystem::remove(metadata_partial_, ignored);
+            std::filesystem::remove(video_partial_, ignored);
+            std::filesystem::remove(metadata_final_, ignored);
+            std::filesystem::remove(video_final_, ignored);
+            throw;
+        }
+        published_ = true;
+
+        return {{"video",
+                 {{"path", "video.mp4"},
+                  {"media_type", "video/mp4;codecs=avc1"},
+                  {"size_bytes", std::filesystem::file_size(video_final_)},
+                  {"sha256", sha256_file(video_final_)}}},
+                {"metadata",
+                 {{"path", "meta/cdg00.jsonl"},
+                  {"media_type", "application/x-ndjson"},
+                  {"size_bytes", std::filesystem::file_size(metadata_final_)},
+                  {"sha256", sha256_file(metadata_final_)}}}};
+    }
+
+    std::size_t frame_count() const { return frame_count_; }
+
+    const std::filesystem::path& video_partial_path() const {
+        return video_partial_;
+    }
+
+  private:
+    std::filesystem::path video_partial_;
+    std::filesystem::path video_final_;
+    std::filesystem::path metadata_partial_;
+    std::filesystem::path metadata_final_;
+    std::ofstream         metadata_output_;
+    std::size_t           frame_count_ = 0;
+    bool                  published_   = false;
+};
+
+void verify_input_artifact(const Json&                  input,
+                           const std::filesystem::path& input_path) {
+    std::error_code error;
+    if (std::filesystem::is_symlink(
+            std::filesystem::symlink_status(input_path, error))) {
+        throw ImageProcessError(satellite::EXIT_VALIDATION,
+                                "input artifact path must not be a symlink");
+    }
+    if (error || !std::filesystem::is_regular_file(input_path)) {
+        throw ImageProcessError(satellite::EXIT_VALIDATION,
+                                "input artifact must be a regular file");
+    }
+    const std::uintmax_t actual_size = std::filesystem::file_size(input_path);
+    if (input.contains("size_bytes") &&
+        input.at("size_bytes").get<std::uintmax_t>() != actual_size) {
+        throw ImageProcessError(satellite::EXIT_VALIDATION,
+                                "input artifact size does not match request");
+    }
+    if (input.contains("sha256") &&
+        input.at("sha256").get<std::string>() != sha256_file(input_path)) {
+        throw ImageProcessError(satellite::EXIT_VALIDATION,
+                                "input artifact digest does not match request");
+    }
 }
 
 }  // namespace
@@ -244,12 +384,19 @@ ValidationResult validate_request(const Json& request) {
         return result;
     }
 
-    const std::string role = profile.at("filter").value("role", "");
-    if (mode == "pushbroom" && role.find("tracking") != std::string::npos) {
+    const std::string role        = profile.at("filter").value("role", "");
+    const std::string output_mode = profile.value("output_mode", "frames");
+    if (output_mode == "ground_cdg00" && role != "parse") {
+        result.message = "ground CDG0.0 profile requires the parse role";
+        return result;
+    }
+    if (output_mode != "ground_cdg00" && mode == "pushbroom" &&
+        role.find("tracking") != std::string::npos) {
         result.message = "pushbroom mode forbids tracking filters";
         return result;
     }
-    if (mode == "pushbroom" && role.find("detection") == std::string::npos) {
+    if (output_mode != "ground_cdg00" && mode == "pushbroom" &&
+        role.find("detection") == std::string::npos) {
         result.message = "pushbroom mode requires a detection filter";
         return result;
     }
@@ -265,6 +412,11 @@ ValidationResult validate_request(const Json& request) {
             result.message = "input.path is required for non-fixture profiles";
             return result;
         }
+    }
+    if (output_mode == "ground_cdg00" &&
+        (!input.contains("size_bytes") || !input.contains("sha256"))) {
+        result.message = "ground CDG0.0 input requires size_bytes and sha256";
+        return result;
     }
 
     if (processing.contains("max_frames")) {
@@ -320,44 +472,94 @@ Json run(const Json&                  request,
     std::filesystem::path input_path;
     if (request.at("input").contains("path")) {
         input_path = request.at("input").at("path").get<std::string>();
-        if (!std::filesystem::exists(input_path)) {
-            throw ImageProcessError(
-                satellite::EXIT_VALIDATION,
-                "input artifact path does not exist: " + input_path.string());
-        }
+        verify_input_artifact(request.at("input"), input_path);
     }
 
     const std::size_t profile_limit =
         profile.at("max_frames").get<std::size_t>();
     const std::size_t max_frames =
         request.at("processing").value("max_frames", profile_limit);
-    PipelineResult pipeline_result =
-        run_pipeline(profile, input_path, max_frames);
-    if (pipeline_result.frames.empty()) {
+    const bool ground_cdg00 =
+        profile.value("output_mode", "") == "ground_cdg00";
+    std::vector<ProcessedFrame>           frames;
+    PipelineResult                        pipeline_result;
+    std::unique_ptr<GroundCdg00Collector> ground_collector;
+    if (ground_cdg00) {
+        for (const auto& path :
+             {work_dir / "video.mp4", work_dir / "video.mp4.partial",
+              work_dir / "meta" / "cdg00.jsonl",
+              work_dir / "meta" / "cdg00.jsonl.partial",
+              work_dir / "result.json", work_dir / "pipeline-plan.json"}) {
+            if (std::filesystem::exists(path)) {
+                throw ImageProcessError(
+                    satellite::EXIT_VALIDATION,
+                    "ground output path already exists: " + path.string());
+            }
+        }
+        ground_collector = std::make_unique<GroundCdg00Collector>(work_dir);
+        pipeline_result  = run_ground_cdg00_pipeline(
+            profile, input_path, ground_collector->video_partial_path(),
+            max_frames,
+            [&](const Json& metadata) { ground_collector->consume(metadata); });
+    }
+    else {
+        pipeline_result = run_pipeline(
+            profile, input_path, max_frames,
+            [&](const ProcessedFrame& frame) { frames.push_back(frame); });
+    }
+    if (pipeline_result.frame_count == 0U) {
         throw ImageProcessError(satellite::EXIT_NO_RESULT,
                                 "pipeline reached EOS without frames");
     }
 
-    const Json bundle_manifest = {
-        {"schema_version", "1.0"},
-        {"request_id", request.at("request_id")},
-        {"trace_id", request.value("trace_id", Json(nullptr))},
-        {"input_artifact", request.at("input")},
-        {"runtime_profile", profile_id},
-        {"acquisition_mode", request.at("acquisition_mode")},
-        {"sensor_id", request.at("sensor").at("id")},
-        {"pipeline_plan", plan},
-        {"provenance", pipeline_result.provenance},
-        {"frame_count", pipeline_result.frames.size()}};
-    const ProductArtifact artifact =
-        write_product(work_dir, bundle_manifest, pipeline_result.frames);
-
-    output["frame_count"] = pipeline_result.frames.size();
-    output["artifact"]    = {{"path", artifact.path.filename().string()},
-                             {"media_type", "application/x-tar"},
-                             {"size_bytes", artifact.size_bytes},
-                             {"sha256", artifact.sha256}};
-    output["provenance"]  = pipeline_result.provenance;
+    Json resource_usage = pipeline_result.resource_usage;
+    resource_usage["input_bytes"] =
+        input_path.empty() ? 0U : std::filesystem::file_size(input_path);
+    if (ground_collector) {
+        if (ground_collector->frame_count() != pipeline_result.frame_count) {
+            throw ImageProcessError(
+                satellite::EXIT_FATAL,
+                "ground metadata count does not match encoded input frames");
+        }
+        const Json artifacts    = ground_collector->publish();
+        output["artifact"]      = artifacts.at("video");
+        output["meta_artifact"] = artifacts.at("metadata");
+        resource_usage["video_output_bytes"] =
+            output.at("artifact").at("size_bytes");
+        resource_usage["metadata_output_bytes"] =
+            output.at("meta_artifact").at("size_bytes");
+        const double wall =
+            resource_usage.at("wall_time_seconds").get<double>();
+        resource_usage["frames_per_second"] =
+            wall > 0.0 ? static_cast<double>(pipeline_result.frame_count) / wall
+                       : 0.0;
+    }
+    else {
+        const Json bundle_manifest = {
+            {"schema_version", "1.0"},
+            {"request_id", request.at("request_id")},
+            {"trace_id", request.value("trace_id", Json(nullptr))},
+            {"input_artifact", sanitized_input_artifact(request.at("input"))},
+            {"runtime_profile", profile_id},
+            {"acquisition_mode", request.at("acquisition_mode")},
+            {"sensor_id", request.at("sensor").at("id")},
+            {"pipeline_plan", plan},
+            {"provenance", pipeline_result.provenance},
+            {"first_frame_metadata", pipeline_result.first_frame_metadata},
+            {"last_frame_metadata", pipeline_result.last_frame_metadata},
+            {"frame_count", pipeline_result.frame_count}};
+        const ProductArtifact artifact =
+            write_product(work_dir, bundle_manifest, frames);
+        output["artifact"] = {{"path", artifact.path.filename().string()},
+                              {"media_type", "application/x-tar"},
+                              {"size_bytes", artifact.size_bytes},
+                              {"sha256", artifact.sha256}};
+    }
+    output["frame_count"]    = pipeline_result.frame_count;
+    output["provenance"]     = pipeline_result.provenance;
+    output["resource_usage"] = resource_usage;
+    write_json_atomic(work_dir / "pipeline-plan.json", plan);
+    write_json_atomic(work_dir / "result.json", output);
     return output;
 }
 

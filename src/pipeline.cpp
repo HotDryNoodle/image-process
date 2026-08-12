@@ -3,11 +3,17 @@
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 
 #include "image_process.hpp"
@@ -15,6 +21,112 @@
 
 namespace image_process {
 namespace {
+
+struct MsfGenericMetaLayout {
+    GstMeta  meta;
+    gpointer data;
+    gsize    data_size;
+};
+
+struct Cdg00TimestampLayout {
+    std::uint32_t seconds;
+    std::uint32_t microseconds;
+};
+
+struct Cdg00GpsTimeLayout {
+    std::uint16_t week;
+    std::uint32_t seconds;
+};
+
+struct Cdg00ParameterLayout {
+    std::uint8_t         channel_id;
+    std::uint8_t         strip_number;
+    std::uint32_t        row_number;
+    std::uint8_t         time_sync_status;
+    Cdg00TimestampLayout camera_time;
+    std::uint32_t        exposure_time_ns;
+    Cdg00GpsTimeLayout   gps_time;
+    std::array<float, 3> lla;
+    std::array<float, 3> velocity;
+    std::array<float, 3> attitude;
+};
+
+static_assert(sizeof(Cdg00ParameterLayout) == 68U,
+              "unexpected host layout for MSF CDG0.0 metadata");
+
+double timeval_seconds(const timeval& value) {
+    return static_cast<double>(value.tv_sec) +
+           static_cast<double>(value.tv_usec) / 1'000'000.0;
+}
+
+struct UsageSnapshot {
+    double        cpu_seconds    = 0.0;
+    std::uint64_t peak_rss_bytes = 0;
+};
+
+UsageSnapshot read_usage() {
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                "failed to read process resource usage");
+    }
+#if defined(__APPLE__)
+    const auto peak_rss_bytes = static_cast<std::uint64_t>(usage.ru_maxrss);
+#else
+    const auto peak_rss_bytes =
+        static_cast<std::uint64_t>(usage.ru_maxrss) * 1024U;
+#endif
+    return {timeval_seconds(usage.ru_utime) + timeval_seconds(usage.ru_stime),
+            peak_rss_bytes};
+}
+
+class ResourceSampler {
+  public:
+    ResourceSampler()
+        : started_at_(std::chrono::steady_clock::now()),
+          last_at_(started_at_),
+          started_usage_(read_usage()),
+          last_usage_(started_usage_) {}
+
+    void sample() {
+        const auto   now   = std::chrono::steady_clock::now();
+        const auto   usage = read_usage();
+        const double elapsed =
+            std::chrono::duration<double>(now - last_at_).count();
+        if (elapsed >= 0.01) {
+            const double cpu_percent =
+                100.0 * (usage.cpu_seconds - last_usage_.cpu_seconds) / elapsed;
+            peak_cpu_percent_ = std::max(peak_cpu_percent_, cpu_percent);
+        }
+        last_at_    = now;
+        last_usage_ = usage;
+    }
+
+    Json finish() {
+        sample();
+        const double wall_time_seconds =
+            std::chrono::duration<double>(last_at_ - started_at_).count();
+        const double cpu_time_seconds =
+            last_usage_.cpu_seconds - started_usage_.cpu_seconds;
+        const double average_cpu_percent =
+            wall_time_seconds > 0.0
+                ? 100.0 * cpu_time_seconds / wall_time_seconds
+                : 0.0;
+        return {{"wall_time_seconds", wall_time_seconds},
+                {"cpu_time_seconds", cpu_time_seconds},
+                {"average_cpu_percent", average_cpu_percent},
+                {"peak_observed_cpu_percent", peak_cpu_percent_},
+                {"peak_rss_bytes", last_usage_.peak_rss_bytes},
+                {"sampling", "per_output_frame_and_bus_poll"}};
+    }
+
+  private:
+    std::chrono::steady_clock::time_point started_at_;
+    std::chrono::steady_clock::time_point last_at_;
+    UsageSnapshot                         started_usage_;
+    UsageSnapshot                         last_usage_;
+    double                                peak_cpu_percent_ = 0.0;
+};
 
 class ScopedStdoutToStderr {
   public:
@@ -122,6 +234,36 @@ void set_property(GstElement*        element,
         const std::string text = value.get<std::string>();
         g_object_set(object, name.c_str(), text.c_str(), nullptr);
     }
+    else if (G_TYPE_IS_ENUM(type) && value.is_string()) {
+        GEnumClass*       enum_class = G_ENUM_CLASS(g_type_class_ref(type));
+        const std::string text       = value.get<std::string>();
+        const GEnumValue* enum_value =
+            g_enum_get_value_by_nick(enum_class, text.c_str());
+        if (enum_value == nullptr) {
+            g_type_class_unref(enum_class);
+            throw ImageProcessError(
+                satellite::EXIT_DEPENDENCY,
+                "runtime profile enum nick is not supported: " + name + "=" +
+                    text);
+        }
+        g_object_set(object, name.c_str(), enum_value->value, nullptr);
+        g_type_class_unref(enum_class);
+    }
+    else if (G_TYPE_IS_FLAGS(type) && value.is_string()) {
+        GFlagsClass*       flags_class = G_FLAGS_CLASS(g_type_class_ref(type));
+        const std::string  text        = value.get<std::string>();
+        const GFlagsValue* flags_value =
+            g_flags_get_value_by_nick(flags_class, text.c_str());
+        if (flags_value == nullptr) {
+            g_type_class_unref(flags_class);
+            throw ImageProcessError(
+                satellite::EXIT_DEPENDENCY,
+                "runtime profile flags nick is not supported: " + name + "=" +
+                    text);
+        }
+        g_object_set(object, name.c_str(), flags_value->value, nullptr);
+        g_type_class_unref(flags_class);
+    }
     else {
         throw ImageProcessError(
             satellite::EXIT_DEPENDENCY,
@@ -157,6 +299,157 @@ Json factory_provenance(const std::string& factory_name) {
     return result;
 }
 
+Json finite_or_null(float value) {
+    return std::isfinite(value) ? Json(value) : Json(nullptr);
+}
+
+Json float_triplet(const std::array<float, 3>& values) {
+    return Json::array({finite_or_null(values[0]), finite_or_null(values[1]),
+                        finite_or_null(values[2])});
+}
+
+Json normalize_cdg00_parameter(const Cdg00ParameterLayout& parameter) {
+    return {
+        {"channel_id", parameter.channel_id},
+        {"strip_number", parameter.strip_number},
+        {"row_number", parameter.row_number},
+        {"time_sync_status", parameter.time_sync_status},
+        {"camera_time",
+         {{"scale", "camera"},
+          {"seconds", parameter.camera_time.seconds},
+          {"microseconds", parameter.camera_time.microseconds}}},
+        {"exposure", {{"value", parameter.exposure_time_ns}, {"unit", "ns"}}},
+        {"gps_time",
+         {{"scale", "GPS"},
+          {"week", parameter.gps_time.week},
+          {"seconds", parameter.gps_time.seconds}}},
+        {"lla",
+         {{"values", float_triplet(parameter.lla)},
+          {"units", Json::array({"source", "source", "source"})},
+          {"normalized", false}}},
+        {"velocity",
+         {{"values", float_triplet(parameter.velocity)},
+          {"frame", "source"},
+          {"units", Json::array({"source", "source", "source"})},
+          {"normalized", false}}},
+        {"attitude",
+         {{"values", float_triplet(parameter.attitude)},
+          {"order", "roll-pitch-yaw_3-2-1"},
+          {"frame", "source"},
+          {"units", Json::array({"source", "source", "source"})},
+          {"normalized", false}}},
+        {"source_convention", "msf.cdg00"}};
+}
+
+Json normalize_cdg00_meta(const GstMeta* meta) {
+    if (meta->info->size < sizeof(MsfGenericMetaLayout)) {
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                "MSF CDG0.0 meta container ABI is too small");
+    }
+    const auto* generic = reinterpret_cast<const MsfGenericMetaLayout*>(meta);
+    constexpr std::size_t kExpectedSize = 2U * sizeof(Cdg00ParameterLayout);
+    if (generic->data == nullptr || generic->data_size != kExpectedSize) {
+        throw ImageProcessError(
+            satellite::EXIT_DEPENDENCY,
+            "MSF CDG0.0 meta payload ABI does not match the approved host "
+            "adapter");
+    }
+    std::array<Cdg00ParameterLayout, 2> parameters{};
+    std::memcpy(parameters.data(), generic->data, kExpectedSize);
+    return {{"abi", "msf.cdg00.native-v1-host-adapter"},
+            {"payload_size_bytes", kExpectedSize},
+            {"window_start", normalize_cdg00_parameter(parameters[0])},
+            {"window_end", normalize_cdg00_parameter(parameters[1])}};
+}
+
+Json concise_cdg00_metadata(GstBuffer* buffer, std::size_t frame_id) {
+    gpointer state = nullptr;
+    while (GstMeta* meta = gst_buffer_iterate_meta(buffer, &state)) {
+        const gchar* api_name = g_type_name(meta->info->api);
+        if (api_name == nullptr || std::string(api_name) != "meta_cdg00_api") {
+            continue;
+        }
+        if (meta->info->size < sizeof(MsfGenericMetaLayout)) {
+            throw ImageProcessError(
+                satellite::EXIT_DEPENDENCY,
+                "MSF CDG0.0 meta container ABI is too small");
+        }
+        const auto* generic =
+            reinterpret_cast<const MsfGenericMetaLayout*>(meta);
+        constexpr std::size_t kExpectedSize = 2U * sizeof(Cdg00ParameterLayout);
+        if (generic->data == nullptr || generic->data_size != kExpectedSize) {
+            throw ImageProcessError(
+                satellite::EXIT_DEPENDENCY,
+                "MSF CDG0.0 meta payload ABI does not match the approved host "
+                "adapter");
+        }
+        std::array<Cdg00ParameterLayout, 2> parameters{};
+        std::memcpy(parameters.data(), generic->data, kExpectedSize);
+        const auto& start = parameters[0];
+        return {{"frame_id", frame_id},
+                {"gps_time",
+                 {{"scale", "GPS"},
+                  {"week", start.gps_time.week},
+                  {"seconds", start.gps_time.seconds}}},
+                {"lla", float_triplet(start.lla)},
+                {"rpy", float_triplet(start.attitude)},
+                {"velocity", float_triplet(start.velocity)}};
+    }
+    throw ImageProcessError(
+        satellite::EXIT_DEPENDENCY,
+        "CDG00Src output is missing required meta_cdg00_api metadata");
+}
+
+struct GroundProbeContext {
+    std::mutex         mutex;
+    std::size_t        frame_count = 0;
+    std::size_t        max_frames  = 0;
+    MetadataConsumer   consumer;
+    std::exception_ptr error;
+    Json               first_metadata;
+    Json               last_metadata;
+};
+
+GstPadProbeReturn collect_ground_metadata(GstPad*,
+                                          GstPadProbeInfo* info,
+                                          gpointer         user_data) {
+    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0U) {
+        return GST_PAD_PROBE_OK;
+    }
+    auto* context = static_cast<GroundProbeContext*>(user_data);
+    std::lock_guard<std::mutex> lock(context->mutex);
+    if (context->error != nullptr) { return GST_PAD_PROBE_DROP; }
+    try {
+        if (context->frame_count >= context->max_frames) {
+            throw ImageProcessError(
+                satellite::EXIT_RETRYABLE,
+                "pipeline exceeded the installed frame limit before EOS");
+        }
+        GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+        Json metadata = concise_cdg00_metadata(buffer, context->frame_count);
+        context->consumer(metadata);
+        if (context->frame_count == 0U) { context->first_metadata = metadata; }
+        context->last_metadata = metadata;
+        ++context->frame_count;
+    } catch (...) { context->error = std::current_exception(); }
+    return context->error == nullptr ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
+}
+
+void rethrow_probe_error(GroundProbeContext& context) {
+    std::lock_guard<std::mutex> lock(context.mutex);
+    if (context.error != nullptr) { std::rethrow_exception(context.error); }
+}
+
+void require_factory(const std::string& factory_name) {
+    GstElementFactory* factory = gst_element_factory_find(factory_name.c_str());
+    if (factory == nullptr) {
+        throw ImageProcessError(
+            satellite::EXIT_DEPENDENCY,
+            "required GStreamer factory not found: " + factory_name);
+    }
+    gst_object_unref(factory);
+}
+
 Json sample_metadata(GstSample* sample, std::size_t index) {
     GstBuffer* buffer   = gst_sample_get_buffer(sample);
     GstCaps*   caps     = gst_sample_get_caps(sample);
@@ -188,8 +481,12 @@ Json sample_metadata(GstSample* sample, std::size_t index) {
 
     gpointer state = nullptr;
     while (GstMeta* meta = gst_buffer_iterate_meta(buffer, &state)) {
-        const gchar* api_name = g_type_name(meta->info->api);
-        metadata["meta_apis"].push_back(api_name == nullptr ? "" : api_name);
+        const gchar*      api_name = g_type_name(meta->info->api);
+        const std::string api      = api_name == nullptr ? "" : api_name;
+        metadata["meta_apis"].push_back(api);
+        if (api == "meta_cdg00_api") {
+            metadata["cdg00"] = normalize_cdg00_meta(meta);
+        }
     }
     return metadata;
 }
@@ -212,41 +509,80 @@ ProcessedFrame copy_sample(GstSample* sample, std::size_t index) {
 }  // namespace
 
 Json make_pipeline_plan(const Json& profile) {
-    return {{"source",
+    if (profile.value("output_mode", "") == "ground_cdg00") {
+        return {
+            {"source",
              {{"factory", profile.at("source").at("factory")},
-              {"role", "sensor_source"}}},
-            {"normalization", {{"role", "raw_video_caps"}}},
-            {"filter",
+              {"role", "sensor_source"},
+              {"properties", profile.at("source").at("properties")}}},
+            {"metadata_probe",
              {{"factory", profile.at("filter").at("factory")},
-              {"role", profile.at("filter").at("role")}}},
-            {"sink",
-             {{"factory", "appsink"},
-              {"role", "bounded_artifact_sink"},
-              {"max_buffers", 2},
-              {"wait_on_eos", false}}},
+              {"role", "metadata_only"},
+              {"contract",
+               {{"fields", {"frame_id", "lla", "rpy", "velocity", "gps_time"}},
+                {"sample_point", "window_start"},
+                {"gps_time_scale", "GPS"},
+                {"lla_order", "longitude_latitude_altitude"},
+                {"rpy_order", "roll_pitch_yaw_3-2-1"},
+                {"velocity_order", "x_y_z"},
+                {"source_convention", "msf.cdg00"},
+                {"frame", "source"},
+                {"units", "source"},
+                {"zero_values_do_not_imply_valid", true}}}}},
+            {"video",
+             {{"convert", profile.at("video").at("convert")},
+              {"scale", profile.at("video").at("scale")},
+              {"caps", profile.at("video").at("caps")},
+              {"encoder", profile.at("video").at("encoder")},
+              {"parser", profile.at("video").at("parser")},
+              {"muxer", profile.at("video").at("muxer")},
+              {"sink", {{"factory", "filesink"}, {"path", "video.mp4"}}}}},
+            {"output_mode", "ground_cdg00"},
             {"evidence_class", profile.at("evidence_class")}};
+    }
+    Json plan = {{"source",
+                  {{"factory", profile.at("source").at("factory")},
+                   {"role", "sensor_source"},
+                   {"properties", profile.at("source").at("properties")}}},
+                 {"normalization", {{"role", "raw_video_caps"}}},
+                 {"filter",
+                  {{"factory", profile.at("filter").at("factory")},
+                   {"role", profile.at("filter").at("role")},
+                   {"properties", profile.at("filter").at("properties")}}},
+                 {"sink",
+                  {{"factory", "appsink"},
+                   {"role", "bounded_artifact_sink"},
+                   {"max_buffers", 2},
+                   {"wait_on_eos", false}}},
+                 {"evidence_class", profile.at("evidence_class")}};
+    if (profile.contains("output_mode")) {
+        plan["output_mode"] = profile.at("output_mode");
+    }
+    return plan;
 }
 
 void preflight_pipeline(const Json& profile) {
     ensure_gstreamer_initialized();
-    for (const std::string& factory_name :
-         {profile.at("source").at("factory").get<std::string>(),
-          profile.at("filter").at("factory").get<std::string>(),
-          std::string("appsink")}) {
-        GstElementFactory* factory =
-            gst_element_factory_find(factory_name.c_str());
-        if (factory == nullptr) {
-            throw ImageProcessError(
-                satellite::EXIT_DEPENDENCY,
-                "required GStreamer factory not found: " + factory_name);
+    require_factory(profile.at("source").at("factory").get<std::string>());
+    require_factory(profile.at("filter").at("factory").get<std::string>());
+    if (profile.value("output_mode", "") == "ground_cdg00") {
+        for (const std::string& section :
+             {"convert", "scale", "encoder", "parser", "muxer"}) {
+            require_factory(profile.at("video")
+                                .at(section)
+                                .at("factory")
+                                .get<std::string>());
         }
-        gst_object_unref(factory);
+        require_factory("capsfilter");
+        require_factory("filesink");
     }
+    else { require_factory("appsink"); }
 }
 
 PipelineResult run_pipeline(const Json&                  profile,
                             const std::filesystem::path& input_path,
-                            std::size_t                  max_frames) {
+                            std::size_t                  max_frames,
+                            const FrameConsumer&         consumer) {
     // Third-party elements may log directly to stdout while processing. Keep
     // those diagnostics on stderr so the CLI emits exactly one JSON document.
     ScopedStdoutToStderr runtime_log_guard;
@@ -313,19 +649,34 @@ PipelineResult run_pipeline(const Json&                  profile,
                                     "pipeline failed to enter PLAYING state");
         }
 
-        PipelineResult result;
-        GstBus*        bus = gst_element_get_bus(pipeline);
-        const auto     deadline =
+        PipelineResult  result;
+        ResourceSampler resource_sampler;
+        GstBus*         bus = gst_element_get_bus(pipeline);
+        const auto      deadline =
             std::chrono::steady_clock::now() +
             std::chrono::seconds(profile.at("timeout_sec").get<unsigned int>());
         bool done = false;
-        while (!done && result.frames.size() < max_frames) {
+        while (!done) {
             GstSample* sample =
                 gst_app_sink_try_pull_sample(app_sink, 100 * GST_MSECOND);
             if (sample != nullptr) {
-                result.frames.push_back(
-                    copy_sample(sample, result.frames.size()));
+                if (result.frame_count >= max_frames) {
+                    gst_sample_unref(sample);
+                    gst_object_unref(bus);
+                    throw ImageProcessError(
+                        satellite::EXIT_RETRYABLE,
+                        "pipeline exceeded the installed frame limit before "
+                        "EOS");
+                }
+                ProcessedFrame frame = copy_sample(sample, result.frame_count);
                 gst_sample_unref(sample);
+                consumer(frame);
+                if (result.frame_count == 0U) {
+                    result.first_frame_metadata = frame.metadata;
+                }
+                result.last_frame_metadata = frame.metadata;
+                ++result.frame_count;
+                resource_sampler.sample();
                 continue;
             }
 
@@ -351,6 +702,7 @@ PipelineResult run_pipeline(const Json&                  profile,
                 done = true;
                 gst_message_unref(message);
             }
+            resource_sampler.sample();
             if (std::chrono::steady_clock::now() >= deadline) {
                 gst_object_unref(bus);
                 throw ImageProcessError(satellite::EXIT_RETRYABLE,
@@ -359,12 +711,212 @@ PipelineResult run_pipeline(const Json&                  profile,
         }
         gst_object_unref(bus);
 
-        result.provenance = {{"gstreamer_version", gst_version_string()},
-                             {"source", factory_provenance(source_name)},
-                             {"filter", factory_provenance(filter_name)},
-                             {"sink", factory_provenance("appsink")},
-                             {"filter_role", profile.at("filter").at("role")},
-                             {"evidence_class", profile.at("evidence_class")}};
+        result.provenance     = {{"gstreamer_version", gst_version_string()},
+                                 {"source", factory_provenance(source_name)},
+                                 {"filter", factory_provenance(filter_name)},
+                                 {"sink", factory_provenance("appsink")},
+                                 {"filter_role", profile.at("filter").at("role")},
+                                 {"evidence_class", profile.at("evidence_class")}};
+        result.resource_usage = resource_sampler.finish();
+        cleanup();
+        return result;
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+}
+
+PipelineResult run_ground_cdg00_pipeline(
+    const Json&                  profile,
+    const std::filesystem::path& input_path,
+    const std::filesystem::path& video_partial,
+    std::size_t                  max_frames,
+    const MetadataConsumer&      metadata_consumer) {
+    ScopedStdoutToStderr runtime_log_guard;
+    preflight_pipeline(profile);
+
+    const Json&       video = profile.at("video");
+    const std::string source_name =
+        profile.at("source").at("factory").get<std::string>();
+    const std::string probe_name =
+        profile.at("filter").at("factory").get<std::string>();
+    const std::string convert_name =
+        video.at("convert").at("factory").get<std::string>();
+    const std::string scale_name =
+        video.at("scale").at("factory").get<std::string>();
+    const std::string encoder_name =
+        video.at("encoder").at("factory").get<std::string>();
+    const std::string parser_name =
+        video.at("parser").at("factory").get<std::string>();
+    const std::string muxer_name =
+        video.at("muxer").at("factory").get<std::string>();
+
+    GstElement* pipeline = gst_pipeline_new("image-process-cdg00-x264");
+    GstElement* source =
+        gst_element_factory_make(source_name.c_str(), "source");
+    GstElement* probe =
+        gst_element_factory_make(probe_name.c_str(), "meta-probe");
+    GstElement* convert =
+        gst_element_factory_make(convert_name.c_str(), "video-convert");
+    GstElement* scale =
+        gst_element_factory_make(scale_name.c_str(), "video-scale");
+    GstElement* caps_filter =
+        gst_element_factory_make("capsfilter", "video-caps");
+    GstElement* encoder =
+        gst_element_factory_make(encoder_name.c_str(), "video-encoder");
+    GstElement* parser =
+        gst_element_factory_make(parser_name.c_str(), "h264-parser");
+    GstElement* muxer =
+        gst_element_factory_make(muxer_name.c_str(), "mp4-muxer");
+    GstElement* sink = gst_element_factory_make("filesink", "video-sink");
+    const std::array<GstElement*, 9> elements = {pipeline, source, probe,
+                                                 convert,  scale,  caps_filter,
+                                                 encoder,  parser, muxer};
+    if (std::any_of(elements.begin(), elements.end(),
+                    [](GstElement* element) { return element == nullptr; }) ||
+        sink == nullptr) {
+        if (pipeline != nullptr) { gst_object_unref(pipeline); }
+        for (GstElement* element : {source, probe, convert, scale, caps_filter,
+                                    encoder, parser, muxer, sink}) {
+            if (element != nullptr) { gst_object_unref(element); }
+        }
+        throw ImageProcessError(
+            satellite::EXIT_DEPENDENCY,
+            "failed to instantiate approved CDG0.0 x264 pipeline");
+    }
+
+    gst_bin_add_many(GST_BIN(pipeline), source, probe, convert, scale,
+                     caps_filter, encoder, parser, muxer, sink, nullptr);
+    GroundProbeContext probe_context;
+    probe_context.max_frames = max_frames;
+    probe_context.consumer   = metadata_consumer;
+    GstPad* probe_pad        = gst_element_get_static_pad(probe, "src");
+    if (probe_pad == nullptr) {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                "metadata probe has no source pad");
+    }
+    const gulong probe_id =
+        gst_pad_add_probe(probe_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                          collect_ground_metadata, &probe_context, nullptr);
+    gst_object_unref(probe_pad);
+    if (probe_id == 0U) {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                "failed to install metadata pad probe");
+    }
+
+    auto cleanup = [&pipeline, probe, probe_id] {
+        GstPad* pad = gst_element_get_static_pad(probe, "src");
+        if (pad != nullptr) {
+            if (probe_id != 0U) { gst_pad_remove_probe(pad, probe_id); }
+            gst_object_unref(pad);
+        }
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        pipeline = nullptr;
+    };
+
+    try {
+        apply_properties(source, profile.at("source").at("properties"));
+        apply_properties(probe, profile.at("filter").at("properties"));
+        set_property(
+            source,
+            profile.at("source").at("input_path_property").get<std::string>(),
+            input_path.string());
+        apply_properties(convert, video.at("convert").at("properties"));
+        apply_properties(scale, video.at("scale").at("properties"));
+        apply_properties(encoder, video.at("encoder").at("properties"));
+        apply_properties(parser, video.at("parser").at("properties"));
+        apply_properties(muxer, video.at("muxer").at("properties"));
+        set_property(sink, "location", video_partial.string());
+        set_property(sink, "sync", false);
+
+        const Json& caps_json = video.at("caps");
+        GstCaps*    caps      = gst_caps_new_simple(
+            "video/x-raw", "format", G_TYPE_STRING,
+            caps_json.at("format").get<std::string>().c_str(), "width",
+            G_TYPE_INT, caps_json.at("width").get<int>(), "height", G_TYPE_INT,
+            caps_json.at("height").get<int>(), "framerate", GST_TYPE_FRACTION,
+            caps_json.at("framerate_num").get<int>(),
+            caps_json.at("framerate_den").get<int>(), nullptr);
+        g_object_set(G_OBJECT(caps_filter), "caps", caps, nullptr);
+        gst_caps_unref(caps);
+
+        if (!gst_element_link_many(source, probe, convert, scale, caps_filter,
+                                   encoder, parser, muxer, sink, nullptr)) {
+            throw ImageProcessError(
+                satellite::EXIT_DEPENDENCY,
+                "approved CDG0.0 x264 elements cannot negotiate a pipeline");
+        }
+        if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
+            GST_STATE_CHANGE_FAILURE) {
+            throw ImageProcessError(satellite::EXIT_RETRYABLE,
+                                    "CDG0.0 x264 pipeline failed to enter "
+                                    "PLAYING state");
+        }
+
+        ResourceSampler resource_sampler;
+        GstBus*         bus = gst_element_get_bus(pipeline);
+        const auto      deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::seconds(profile.at("timeout_sec").get<unsigned int>());
+        bool done = false;
+        while (!done) {
+            GstMessage* message = gst_bus_timed_pop_filtered(
+                bus, 100 * GST_MSECOND,
+                static_cast<GstMessageType>(GST_MESSAGE_ERROR |
+                                            GST_MESSAGE_EOS));
+            rethrow_probe_error(probe_context);
+            if (message != nullptr) {
+                if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+                    GError* error = nullptr;
+                    gchar*  debug = nullptr;
+                    gst_message_parse_error(message, &error, &debug);
+                    const std::string detail = error == nullptr
+                                                   ? "unknown pipeline error"
+                                                   : error->message;
+                    if (error != nullptr) { g_error_free(error); }
+                    if (debug != nullptr) { g_free(debug); }
+                    gst_message_unref(message);
+                    gst_object_unref(bus);
+                    throw ImageProcessError(
+                        satellite::EXIT_RETRYABLE,
+                        "GStreamer CDG0.0 x264 pipeline error: " + detail);
+                }
+                done = true;
+                gst_message_unref(message);
+            }
+            resource_sampler.sample();
+            if (std::chrono::steady_clock::now() >= deadline) {
+                gst_object_unref(bus);
+                throw ImageProcessError(
+                    satellite::EXIT_RETRYABLE,
+                    "GStreamer CDG0.0 x264 pipeline timed out");
+            }
+        }
+        gst_object_unref(bus);
+        rethrow_probe_error(probe_context);
+
+        PipelineResult result;
+        {
+            std::lock_guard<std::mutex> lock(probe_context.mutex);
+            result.frame_count          = probe_context.frame_count;
+            result.first_frame_metadata = probe_context.first_metadata;
+            result.last_frame_metadata  = probe_context.last_metadata;
+        }
+        result.provenance     = {{"gstreamer_version", gst_version_string()},
+                                 {"source", factory_provenance(source_name)},
+                                 {"metadata_probe", factory_provenance(probe_name)},
+                                 {"convert", factory_provenance(convert_name)},
+                                 {"scale", factory_provenance(scale_name)},
+                                 {"encoder", factory_provenance(encoder_name)},
+                                 {"parser", factory_provenance(parser_name)},
+                                 {"muxer", factory_provenance(muxer_name)},
+                                 {"evidence_class", profile.at("evidence_class")}};
+        result.resource_usage = resource_sampler.finish();
         cleanup();
         return result;
     } catch (...) {

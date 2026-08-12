@@ -142,4 +142,20 @@ msf_status=$?
 set -e
 test "${msf_status}" -eq 3
 
+python3 - "${repo_dir}/samples/cdg00_parse_host.json" "${test_dir}/cdg00-missing-digest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+request = json.loads(pathlib.Path(sys.argv[1]).read_text())
+request["input"].pop("sha256")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(request))
+PY
+set +e
+"${binary}" validate --input "${test_dir}/cdg00-missing-digest.json" \
+  >"${test_dir}/cdg00-missing-digest.out"
+cdg00_missing_digest_status=$?
+set -e
+test "${cdg00_missing_digest_status}" -eq 2
+
 echo "image-process contract tests passed"

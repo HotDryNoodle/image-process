@@ -66,6 +66,7 @@ install_data(
 install_data(
   'samples/pushbroom_fixture.json',
   'samples/stare_cdg00.json',
+  'samples/cdg00_parse_host.json',
   install_dir: get_option('datadir') / 'image-process/samples',
 )
 

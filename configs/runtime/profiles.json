@@ -34,6 +34,54 @@
       "max_frames": 512,
       "timeout_sec": 120
     },
+    "msf.cdg00.parse-host.v1": {
+      "evidence_class": "host_cdg00_real_data",
+      "sensor_id": "cdg00",
+      "acquisition_mode": "pushbroom",
+      "output_mode": "ground_cdg00",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {
+          "channel": 0,
+          "image-height": 4096,
+          "stride-lines": 128,
+          "fps": 30.0,
+          "do-timestamp": true
+        }
+      },
+      "filter": {
+        "factory": "identity",
+        "role": "parse",
+        "properties": {"silent": true}
+      },
+      "video": {
+        "convert": {"factory": "videoconvert", "properties": {"n-threads": 0}},
+        "scale": {"factory": "videoscale", "properties": {"n-threads": 0}},
+        "caps": {
+          "format": "I420",
+          "width": 1024,
+          "height": 1024,
+          "framerate_num": 30,
+          "framerate_den": 1
+        },
+        "encoder": {
+          "factory": "x264enc",
+          "properties": {
+            "bitrate": 6000,
+            "speed-preset": "veryfast",
+            "tune": "zerolatency",
+            "key-int-max": 30,
+            "threads": 0,
+            "byte-stream": false
+          }
+        },
+        "parser": {"factory": "h264parse", "properties": {"config-interval": -1}},
+        "muxer": {"factory": "mp4mux", "properties": {"faststart": true}}
+      },
+      "max_frames": 64,
+      "timeout_sec": 300
+    },
     "msf.cdg00.pushbroom.v1": {
       "evidence_class": "development",
       "sensor_id": "cdg00",

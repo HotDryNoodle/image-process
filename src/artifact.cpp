@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -78,6 +79,40 @@ void append_entry(std::ofstream&     output,
     output.write(zeros.data(), static_cast<std::streamsize>(padding));
 }
 
+void append_file_entry(std::ofstream&               output,
+                       const std::string&           name,
+                       const std::filesystem::path& path) {
+    const std::uintmax_t file_size = std::filesystem::file_size(path);
+    if (file_size > std::numeric_limits<std::size_t>::max()) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                "tar member exceeds host size limit: " + name);
+    }
+    const auto header =
+        make_tar_header(name, static_cast<std::size_t>(file_size));
+    output.write(header.data(), static_cast<std::streamsize>(header.size()));
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                "cannot open tar member: " + path.string());
+    }
+    std::array<char, 64 * 1024> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = input.gcount();
+        if (count > 0) { output.write(buffer.data(), count); }
+    }
+    if (!input.eof()) {
+        throw ImageProcessError(
+            satellite::EXIT_FATAL,
+            "failed while reading tar member: " + path.string());
+    }
+    const std::size_t padding =
+        (512U - (static_cast<std::size_t>(file_size) % 512U)) % 512U;
+    const std::array<char, 512> zeros{};
+    output.write(zeros.data(), static_cast<std::streamsize>(padding));
+}
+
 TarEntries make_entries(const Json&                        manifest,
                         const std::vector<ProcessedFrame>& frames) {
     TarEntries entries;
@@ -97,6 +132,45 @@ TarEntries make_entries(const Json&                        manifest,
 }
 
 }  // namespace
+
+void publish_partial_file(const std::filesystem::path& partial,
+                          const std::filesystem::path& final) {
+    const int file_descriptor = ::open(partial.c_str(), O_RDONLY);
+    if (file_descriptor < 0 || ::fsync(file_descriptor) != 0) {
+        if (file_descriptor >= 0) { ::close(file_descriptor); }
+        throw ImageProcessError(
+            satellite::EXIT_FATAL,
+            "failed to fsync partial artifact: " + partial.string());
+    }
+    ::close(file_descriptor);
+
+    std::error_code error;
+    std::filesystem::rename(partial, final, error);
+    if (error) {
+        throw ImageProcessError(
+            satellite::EXIT_FATAL,
+            "atomic artifact publication failed: " + error.message());
+    }
+}
+
+void write_json_atomic(const std::filesystem::path& path, const Json& value) {
+    const std::filesystem::path partial = path.string() + ".partial";
+    std::ofstream output(partial, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw ImageProcessError(
+            satellite::EXIT_FATAL,
+            "cannot create JSON artifact: " + partial.string());
+    }
+    output << value.dump(2) << '\n';
+    output.flush();
+    if (!output) {
+        throw ImageProcessError(
+            satellite::EXIT_FATAL,
+            "failed while writing JSON artifact: " + partial.string());
+    }
+    output.close();
+    publish_partial_file(partial, path);
+}
 
 std::string sha256_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -147,22 +221,54 @@ ProductArtifact write_product(const std::filesystem::path&       work_dir,
     }
     output.close();
 
-    const int file_descriptor = ::open(partial.c_str(), O_RDONLY);
-    if (file_descriptor < 0 || ::fsync(file_descriptor) != 0) {
-        if (file_descriptor >= 0) { ::close(file_descriptor); }
-        throw ImageProcessError(satellite::EXIT_FATAL,
-                                "failed to fsync product artifact");
-    }
-    ::close(file_descriptor);
+    publish_partial_file(partial, product);
 
-    std::error_code error;
-    std::filesystem::rename(partial, product, error);
-    if (error) {
+    return {product, std::filesystem::file_size(product), sha256_file(product)};
+}
+
+ProductArtifact write_product_from_files(
+    const std::filesystem::path&                                      work_dir,
+    const Json&                                                       manifest,
+    const std::vector<std::pair<std::string, std::filesystem::path>>& members) {
+    std::filesystem::create_directories(work_dir);
+    const std::filesystem::path partial = work_dir / "product.bin.partial";
+    const std::filesystem::path product = work_dir / "product.bin";
+
+    std::map<std::string, std::filesystem::path> sorted_members;
+    for (const auto& member : members) {
+        if (!sorted_members.emplace(member.first, member.second).second) {
+            throw ImageProcessError(satellite::EXIT_FATAL,
+                                    "duplicate tar member: " + member.first);
+        }
+    }
+
+    std::ofstream output(partial, std::ios::binary | std::ios::trunc);
+    if (!output) {
         throw ImageProcessError(
             satellite::EXIT_FATAL,
-            "atomic product publication failed: " + error.message());
+            "cannot create product artifact: " + partial.string());
     }
-
+    bool manifest_written = false;
+    for (const auto& member : sorted_members) {
+        if (!manifest_written && "manifest.json" < member.first) {
+            append_entry(output, "manifest.json", manifest.dump(2) + "\n");
+            manifest_written = true;
+        }
+        append_file_entry(output, member.first, member.second);
+    }
+    if (!manifest_written) {
+        append_entry(output, "manifest.json", manifest.dump(2) + "\n");
+    }
+    const std::array<char, 1024> end_blocks{};
+    output.write(end_blocks.data(),
+                 static_cast<std::streamsize>(end_blocks.size()));
+    output.flush();
+    if (!output) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                "failed while writing product artifact");
+    }
+    output.close();
+    publish_partial_file(partial, product);
     return {product, std::filesystem::file_size(product), sha256_file(product)};
 }
 
