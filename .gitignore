@@ -1,4 +1,5 @@
 build/
+build-*/
 install/
 subprojects/satellite-plugin-sdk
 subprojects/satellite-workspace-sdk-*

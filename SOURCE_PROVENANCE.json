@@ -1,0 +1,157 @@
+{
+  "schema_version": "1.0",
+  "reviewed_revision": "c4046d66a60da97cf4b28d20b9cedd9a9bffb254",
+  "upstream": "https://github.com/HotDryNoodle/msf",
+  "history_status": "preserved_bounded_import",
+  "history_import": {
+    "merge_commit": "f101027257384736389fd780cccfda929a99e785",
+    "filtered_tip": "ee0673157963acdec752ab36a31b7faa7f06886a",
+    "approved_paths": [
+      "source/src/cdg00_reader.cpp",
+      "source/src/cdg00_reader.hpp",
+      "source/src/img_scan_src.cpp",
+      "source/src/img_scan_src.hpp"
+    ],
+    "commit_map": [
+      {
+        "original_commit": "f3fa94c5d81564d33c2ef0bc2b7a8d84d281b660",
+        "imported_commit": "d574fde26480e2d79ef7acdfcfb5d02f66104a41"
+      },
+      {
+        "original_commit": "aed003b98942a2ab82881d6babd8ed9f809b5bf6",
+        "imported_commit": "ef747772aed99a984c4d1d89b489841943a425c6"
+      },
+      {
+        "original_commit": "3fa491d653a3bde298ef694e723893b71f862791",
+        "imported_commit": "c462b26a6ac1188e09951dfb7850ca482b96d9c2"
+      },
+      {
+        "original_commit": "055d072a424b401433701a514a0ebd9e8523dd2d",
+        "imported_commit": "6a49be7b4e2e5bfeae10adc679bf276f1f3c86ab"
+      },
+      {
+        "original_commit": "a58a2301d500b1194aec53feb9476999d90cdf48",
+        "imported_commit": "674c3c6f72f4fef0d8a4f308614deebbeae3744b"
+      },
+      {
+        "original_commit": "a5a7227d9a8abe51dbeaba4c093e3d643e23c561",
+        "imported_commit": "afd3dea545d0ff7193eccd98bc7bbeb7ad97476c"
+      },
+      {
+        "original_commit": "df6c4cc27c784bc43b258072d86c26beedcd9da9",
+        "imported_commit": "8b6c13de2d28d7df11ecf6088a4fadce45f9dcfd"
+      },
+      {
+        "original_commit": "d24399af651405b5b09f1fbd7b1a6cb4b8ccaa27",
+        "imported_commit": "d1b0d58b1d12fbcb3ea976b63ee735a91abca6aa"
+      },
+      {
+        "original_commit": "dbba4f4113c471114d6ef006fdd226644bf1424d",
+        "imported_commit": "0a119fed625a6beb407ec40224b1bb2c17fcbd94"
+      },
+      {
+        "original_commit": "5202e0f76756447843fdd96681c4fa14ec56ec8a",
+        "imported_commit": "83704674aee0ec7bb07aa48389a58946a8a494cf"
+      },
+      {
+        "original_commit": "2c57907bc9075ba44f435cf679db0a505b890c3e",
+        "imported_commit": "c5e9e647e19615e3a9d9b87ecc10c77f8cfe15b9"
+      },
+      {
+        "original_commit": "f7272f4599051e1714139c21d5581b5c5c349ddf",
+        "imported_commit": "ee0673157963acdec752ab36a31b7faa7f06886a"
+      }
+    ]
+  },
+  "entries": [
+    {
+      "target_path": "runtime/gst/sources/cdg00_src.cpp",
+      "origin_paths": [
+        "source/src/cdg00_reader.hpp",
+        "source/src/cdg00_reader.cpp"
+      ],
+      "origin_revision": "c4046d66a60da97cf4b28d20b9cedd9a9bffb254",
+      "import_commit": "f101027257384736389fd780cccfda929a99e785",
+      "license": "MIT",
+      "license_evidence": "upstream meson.build project license and docs/README.md license declaration; source file has no conflicting per-file marker",
+      "owner": "image-process/runtime/gst/sources",
+      "treatment": "refactored",
+      "bundle_eligible": true,
+      "notes": "Preserves CDG0.0 framing, parameter parsing and 10-to-8-bit behavior without the upstream generic factory/property framework."
+    },
+    {
+      "target_path": "runtime/gst/sources/img_scan_src.cpp",
+      "origin_paths": [
+        "source/src/img_scan_src.hpp",
+        "source/src/img_scan_src.cpp"
+      ],
+      "origin_revision": "c4046d66a60da97cf4b28d20b9cedd9a9bffb254",
+      "import_commit": "f101027257384736389fd780cccfda929a99e785",
+      "license": "MIT",
+      "license_evidence": "upstream meson.build project license and docs/README.md license declaration; source file has no conflicting per-file marker",
+      "owner": "image-process/runtime/gst/sources",
+      "treatment": "refactored",
+      "bundle_eligible": true,
+      "notes": "Uses C++17 filesystem and the image-process meta ABI; OpenCV remains a build feature."
+    },
+    {
+      "target_path": "runtime/gst/filters/image_filter_test.cpp",
+      "origin_paths": [
+        "source/filter/image_filter_test_processor.hpp",
+        "source/filter/image_filter_test_processor.cpp"
+      ],
+      "origin_revision": "c4046d66a60da97cf4b28d20b9cedd9a9bffb254",
+      "import_commit": null,
+      "license": "MIT",
+      "license_evidence": "new image-process implementation; no source text or algorithm imported from the upstream file",
+      "owner": "image-process/runtime/gst/filters",
+      "treatment": "independent_rewrite",
+      "bundle_eligible": true,
+      "notes": "Factory-name compatibility only; intentionally implemented as a deterministic passthrough fixture filter."
+    },
+    {
+      "target_path": "runtime/meta/src/gst_meta_v1.cpp",
+      "origin_paths": [
+        "source/public/meta/msf_meta.hpp",
+        "source/public/meta/meta_cdg00_impl.hpp",
+        "source/public/meta/meta_cdg00_impl.cpp",
+        "source/public/meta/meta_factory.hpp",
+        "source/public/meta/meta_factory.cpp"
+      ],
+      "origin_revision": "c4046d66a60da97cf4b28d20b9cedd9a9bffb254",
+      "import_commit": null,
+      "license": "MIT",
+      "license_evidence": "new image-process C ABI implementation; upstream meta headers were reviewed as contract evidence but excluded from import",
+      "owner": "image-process/runtime/meta",
+      "treatment": "independent_rewrite",
+      "bundle_eligible": true,
+      "notes": "Replaces private native layout interpretation with fixed-width version and struct-size checks."
+    }
+  ],
+  "excluded": [
+    {
+      "origin_glob": "source/public/meta/** and source/src/meta/**",
+      "license_status": "explicit_lgpl",
+      "decision": "excluded_fail_closed",
+      "notes": "Reviewed for behavior only; no header or implementation is imported."
+    },
+    {
+      "origin_glob": "source/filter/image_filter_test_processor.*",
+      "license_status": "explicit_lgpl",
+      "decision": "excluded_fail_closed",
+      "notes": "Factory compatibility is provided by an independent implementation."
+    },
+    {
+      "origin_glob": "source/unit/deepsort/** and source/filter/deepsort*",
+      "license_status": "explicit_gpl",
+      "decision": "excluded_fail_closed",
+      "notes": "No DeepSort, Munkres or matrix source is imported into this bundle."
+    },
+    {
+      "origin_glob": "data/**, models/**, build*/**, source/sink/**, source/public/property_system.*",
+      "license_status": "unreviewed",
+      "decision": "excluded_fail_closed",
+      "notes": "Outside the approved minimal source/meta/factory closure."
+    }
+  ]
+}

@@ -13,9 +13,10 @@ The canonical repository is
 ## Development build
 
 ```sh
-meson setup build
+meson setup build -Dinternal_runtime=enabled -Ddevelopment_sources=enabled
 meson compile -C build
-./scripts/contract-test.sh build/image-process
+meson test -C build --print-errorlogs
+./scripts/msf-dev-smoke.sh build build/image-process
 ```
 
 Meson obtains JSON and the SDK sources from pinned wraps. The SDK wrap pins the
@@ -23,12 +24,17 @@ canonical in-tree `sdk/` at a specific `satellite-workspace` commit; the SDK no
 longer has a separate repository. Workspace builds replace this wrap with the
 current parent repository's in-tree `sdk/` through the bootstrap scripts.
 
-MSF factories are referenced by the `msf.*` profiles in
-`configs/runtime/profiles.json`. Make the matching MSF runtime bundle available
-through the deployment environment before running those profiles:
+The factories used by the current `msf.*` compatibility profiles are built from
+the bounded source closure under `runtime/`; an external MSF checkout is not a
+normal build input. `SOURCE_PROVENANCE.json` records path-level origin,
+revision, license review, treatment, and fail-closed exclusions. The source
+plugins and collector exchange CDG0.0 data only through the versioned C ABI in
+`runtime/meta/include/image_process/gst_meta_v1.h`.
+
+For a build-tree run, point the process-level runtime path at the same build:
 
 ```sh
-export IMAGE_PROCESS_GST_PLUGIN_PATH=/path/to/msf-runtime
+export IMAGE_PROCESS_GST_PLUGIN_PATH="$PWD/build"
 export GST_PLUGIN_PATH_1_0="$IMAGE_PROCESS_GST_PLUGIN_PATH:${GST_PLUGIN_PATH_1_0:-}"
 export GST_PLUGIN_PATH="$IMAGE_PROCESS_GST_PLUGIN_PATH:${GST_PLUGIN_PATH:-}"
 ./scripts/msf-dev-smoke.sh "$IMAGE_PROCESS_GST_PLUGIN_PATH"
@@ -36,23 +42,27 @@ export GST_PLUGIN_PATH="$IMAGE_PROCESS_GST_PLUGIN_PATH:${GST_PLUGIN_PATH:-}"
 
 `install/env.sh` performs the same registration for the standard immutable
 bundle directory `install/${libdir}/satellite/image-process/gstreamer-1.0`.
-Runtime
-plugins and their private shared-library dependencies belong in that directory.
+Runtime plugins and their private shared-library dependencies belong in that
+directory.
 The request schema deliberately contains no plugin-path field.
+
+The most recently verified external-MSF bundle may be retained only as a
+read-only parity/rollback oracle. It is never selected from a task request and
+must not return as a clean-build input after cutover.
 
 ## Host CDG0.0 real-data test
 
-The host-only parse profile reuses MSF `CDG00Src`, scales the decoded frames to
-1024×1024, and writes an Ogg/Theora `video.ogv` through the same GStreamer
+The host-only parse profile uses the image-process-owned `CDG00Src`, scales the
+decoded frames to 1024×1024, and writes an Ogg/Theora `video.ogv` through the same GStreamer
 `theoraenc ! oggmux` path used by openEuler. It also writes concise
 `meta/cdg00.jsonl` records containing
-only frame id, GPS time, LLA, velocity, and roll/pitch/yaw values from the MSF
+only frame id, GPS time, LLA, velocity, and roll/pitch/yaw values from the
 window-start sample. Zero navigation values are passed through but do not imply
 valid navigation data. The profile does not enable detection or tracking models
 and does not retain raw gray/frame bins.
 
 ```sh
-export IMAGE_PROCESS_GST_PLUGIN_PATH=/path/to/msf-runtime
+export IMAGE_PROCESS_GST_PLUGIN_PATH="$PWD/build"
 export GST_PLUGIN_PATH="$IMAGE_PROCESS_GST_PLUGIN_PATH:${GST_PLUGIN_PATH:-}"
 ./scripts/host-cdg00-test.sh \
   build/image-process \

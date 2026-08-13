@@ -10,6 +10,11 @@ remote is `https://github.com/HotDryNoodle/image-process.git`.
 - Runtime profiles under `configs/runtime/` are the only pipeline allowlist.
 - Pushbroom profiles must be detection-only; stare profiles must contain the
   tracking role.
-- Do not vendor the MSF source tree. Consume a separately prepared runtime
-  bundle and preserve its revision and ABI provenance.
+- Keep reusable runtime source under `runtime/`; never vendor the whole MSF
+  tree or add a long-lived MSF submodule/subtree. Every MSF-derived path must
+  be bounded by `SOURCE_PROVENANCE.json`, retain origin revision/path/license,
+  and pass the fail-closed license inventory before entering a bundle.
+- Runtime elements and the collector exchange metadata only through the
+  versioned C ABI in `runtime/meta/include/`; do not interpret plugin-private
+  native layouts in product code.
 - Run `scripts/contract-test.sh build/image-process` before the commit gate.

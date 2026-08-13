@@ -3,6 +3,7 @@
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <image_process/gst_meta_v1.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -16,43 +17,17 @@
 #include <mutex>
 #include <stdexcept>
 
+#include "artifact.hpp"
 #include "image_process.hpp"
 #include "satellite/exit_codes.hpp"
+#include "satellite/json_io.hpp"
+
+#ifndef IMAGE_PROCESS_RUNTIME_MANIFEST_PATH
+#define IMAGE_PROCESS_RUNTIME_MANIFEST_PATH "runtime-manifest.json"
+#endif
 
 namespace image_process {
 namespace {
-
-struct MsfGenericMetaLayout {
-    GstMeta  meta;
-    gpointer data;
-    gsize    data_size;
-};
-
-struct Cdg00TimestampLayout {
-    std::uint32_t seconds;
-    std::uint32_t microseconds;
-};
-
-struct Cdg00GpsTimeLayout {
-    std::uint16_t week;
-    std::uint32_t seconds;
-};
-
-struct Cdg00ParameterLayout {
-    std::uint8_t         channel_id;
-    std::uint8_t         strip_number;
-    std::uint32_t        row_number;
-    std::uint8_t         time_sync_status;
-    Cdg00TimestampLayout camera_time;
-    std::uint32_t        exposure_time_ns;
-    Cdg00GpsTimeLayout   gps_time;
-    std::array<float, 3> lla;
-    std::array<float, 3> velocity;
-    std::array<float, 3> attitude;
-};
-
-static_assert(sizeof(Cdg00ParameterLayout) == 68U,
-              "unexpected host layout for MSF CDG0.0 metadata");
 
 double timeval_seconds(const timeval& value) {
     return static_cast<double>(value.tv_sec) +
@@ -175,8 +150,9 @@ void ensure_gstreamer_initialized() {
                 "GStreamer initialization failed: " + message);
         }
 
-        // Deployment owns the runtime bundle location. Requests cannot inject
-        // paths; image-process only scans the process-level allowlisted path.
+        // The standard install environment points this variable at the
+        // image-process-owned runtime directory. Requests cannot inject paths;
+        // only the process-level deployment environment can select a bundle.
         const gchar* configured_path =
             g_getenv("IMAGE_PROCESS_GST_PLUGIN_PATH");
         if (configured_path != nullptr && configured_path[0] != '\0') {
@@ -299,16 +275,52 @@ Json factory_provenance(const std::string& factory_name) {
     return result;
 }
 
+Json runtime_contract_provenance() {
+    std::filesystem::path path;
+    if (const char* data_root = std::getenv("IMAGE_PROCESS_DATA_ROOT")) {
+        path = std::filesystem::path(data_root) / "image-process" / "runtime" /
+               "runtime-manifest.json";
+    }
+    else { path = IMAGE_PROCESS_RUNTIME_MANIFEST_PATH; }
+    Json manifest;
+    try {
+        manifest = satellite::read_json_file(path);
+    } catch (const std::exception& error) {
+        throw ImageProcessError(
+            satellite::EXIT_DEPENDENCY,
+            "image-process runtime manifest is unavailable: " +
+                std::string(error.what()));
+    }
+    if (manifest.value("component", "") != "image-process" ||
+        manifest.value("meta_abi", "") != "image-process.gst-meta.v1" ||
+        !manifest.contains("component_revision") ||
+        !manifest.contains("source_provenance_sha256") ||
+        !manifest.contains("build_features")) {
+        throw ImageProcessError(
+            satellite::EXIT_DEPENDENCY,
+            "image-process runtime manifest contract is incompatible");
+    }
+    return {
+        {"component", manifest.at("component")},
+        {"component_version", manifest.at("component_version")},
+        {"component_revision", manifest.at("component_revision")},
+        {"meta_abi", manifest.at("meta_abi")},
+        {"source_provenance_sha256", manifest.at("source_provenance_sha256")},
+        {"runtime_manifest_sha256", sha256_file(path)},
+        {"build_features", manifest.at("build_features")},
+    };
+}
+
 Json finite_or_null(float value) {
     return std::isfinite(value) ? Json(value) : Json(nullptr);
 }
 
-Json float_triplet(const std::array<float, 3>& values) {
+Json float_triplet(const float (&values)[3]) {
     return Json::array({finite_or_null(values[0]), finite_or_null(values[1]),
                         finite_or_null(values[2])});
 }
 
-Json normalize_cdg00_parameter(const Cdg00ParameterLayout& parameter) {
+Json normalize_cdg00_parameter(const IpCdg00SampleV1& parameter) {
     return {
         {"channel_id", parameter.channel_id},
         {"strip_number", parameter.strip_number},
@@ -316,13 +328,13 @@ Json normalize_cdg00_parameter(const Cdg00ParameterLayout& parameter) {
         {"time_sync_status", parameter.time_sync_status},
         {"camera_time",
          {{"scale", "camera"},
-          {"seconds", parameter.camera_time.seconds},
-          {"microseconds", parameter.camera_time.microseconds}}},
+          {"seconds", parameter.camera_seconds},
+          {"microseconds", parameter.camera_microseconds}}},
         {"exposure", {{"value", parameter.exposure_time_ns}, {"unit", "ns"}}},
         {"gps_time",
          {{"scale", "GPS"},
-          {"week", parameter.gps_time.week},
-          {"seconds", parameter.gps_time.seconds}}},
+          {"week", parameter.gps_week},
+          {"seconds", parameter.gps_seconds}}},
         {"lla",
          {{"values", float_triplet(parameter.lla)},
           {"units", Json::array({"source", "source", "source"})},
@@ -341,63 +353,46 @@ Json normalize_cdg00_parameter(const Cdg00ParameterLayout& parameter) {
         {"source_convention", "msf.cdg00"}};
 }
 
-Json normalize_cdg00_meta(const GstMeta* meta) {
-    if (meta->info->size < sizeof(MsfGenericMetaLayout)) {
-        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
-                                "MSF CDG0.0 meta container ABI is too small");
-    }
-    const auto* generic = reinterpret_cast<const MsfGenericMetaLayout*>(meta);
-    constexpr std::size_t kExpectedSize = 2U * sizeof(Cdg00ParameterLayout);
-    if (generic->data == nullptr || generic->data_size != kExpectedSize) {
-        throw ImageProcessError(
-            satellite::EXIT_DEPENDENCY,
-            "MSF CDG0.0 meta payload ABI does not match the approved host "
-            "adapter");
-    }
-    std::array<Cdg00ParameterLayout, 2> parameters{};
-    std::memcpy(parameters.data(), generic->data, kExpectedSize);
-    return {{"abi", "msf.cdg00.native-v1-host-adapter"},
-            {"payload_size_bytes", kExpectedSize},
-            {"window_start", normalize_cdg00_parameter(parameters[0])},
-            {"window_end", normalize_cdg00_parameter(parameters[1])}};
-}
-
-Json concise_cdg00_metadata(GstBuffer* buffer, std::size_t frame_id) {
-    gpointer state = nullptr;
+IpCdg00MetaV1 read_cdg00_meta(GstBuffer* buffer) {
+    bool     api_present = false;
+    gpointer state       = nullptr;
     while (GstMeta* meta = gst_buffer_iterate_meta(buffer, &state)) {
         const gchar* api_name = g_type_name(meta->info->api);
-        if (api_name == nullptr || std::string(api_name) != "meta_cdg00_api") {
-            continue;
+        if (api_name != nullptr && std::string(api_name) == "meta_cdg00_api") {
+            api_present = true;
+            break;
         }
-        if (meta->info->size < sizeof(MsfGenericMetaLayout)) {
-            throw ImageProcessError(
-                satellite::EXIT_DEPENDENCY,
-                "MSF CDG0.0 meta container ABI is too small");
-        }
-        const auto* generic =
-            reinterpret_cast<const MsfGenericMetaLayout*>(meta);
-        constexpr std::size_t kExpectedSize = 2U * sizeof(Cdg00ParameterLayout);
-        if (generic->data == nullptr || generic->data_size != kExpectedSize) {
-            throw ImageProcessError(
-                satellite::EXIT_DEPENDENCY,
-                "MSF CDG0.0 meta payload ABI does not match the approved host "
-                "adapter");
-        }
-        std::array<Cdg00ParameterLayout, 2> parameters{};
-        std::memcpy(parameters.data(), generic->data, kExpectedSize);
-        const auto& start = parameters[0];
-        return {{"frame_id", frame_id},
-                {"gps_time",
-                 {{"scale", "GPS"},
-                  {"week", start.gps_time.week},
-                  {"seconds", start.gps_time.seconds}}},
-                {"lla", float_triplet(start.lla)},
-                {"rpy", float_triplet(start.attitude)},
-                {"velocity", float_triplet(start.velocity)}};
+    }
+    IpCdg00MetaV1 value{};
+    if (ip_buffer_get_cdg00_meta(buffer, &value)) { return value; }
+    if (api_present) {
+        throw ImageProcessError(
+            satellite::EXIT_DEPENDENCY,
+            "CDG0.0 metadata ABI is not image-process.gst-meta.v1");
     }
     throw ImageProcessError(
         satellite::EXIT_DEPENDENCY,
         "CDG00Src output is missing required meta_cdg00_api metadata");
+}
+
+Json normalize_cdg00_meta(GstBuffer* buffer) {
+    const IpCdg00MetaV1 value = read_cdg00_meta(buffer);
+    return {{"abi", "image-process.cdg00.meta-v1"},
+            {"window_start", normalize_cdg00_parameter(value.window_start)},
+            {"window_end", normalize_cdg00_parameter(value.window_end)}};
+}
+
+Json concise_cdg00_metadata(GstBuffer* buffer, std::size_t frame_id) {
+    const IpCdg00MetaV1 value = read_cdg00_meta(buffer);
+    const auto&         start = value.window_start;
+    return {{"frame_id", frame_id},
+            {"gps_time",
+             {{"scale", "GPS"},
+              {"week", start.gps_week},
+              {"seconds", start.gps_seconds}}},
+            {"lla", float_triplet(start.lla)},
+            {"rpy", float_triplet(start.attitude)},
+            {"velocity", float_triplet(start.velocity)}};
 }
 
 struct GroundProbeContext {
@@ -485,7 +480,7 @@ Json sample_metadata(GstSample* sample, std::size_t index) {
         const std::string api      = api_name == nullptr ? "" : api_name;
         metadata["meta_apis"].push_back(api);
         if (api == "meta_cdg00_api") {
-            metadata["cdg00"] = normalize_cdg00_meta(meta);
+            metadata["cdg00"] = normalize_cdg00_meta(buffer);
         }
     }
     return metadata;
@@ -569,8 +564,7 @@ void preflight_pipeline(const Json& profile) {
     require_factory(profile.at("source").at("factory").get<std::string>());
     require_factory(profile.at("filter").at("factory").get<std::string>());
     if (profile.value("output_mode", "") == "ground_cdg00") {
-        for (const std::string& section :
-             {"convert", "scale", "encoder", "muxer"}) {
+        for (const char* section : {"convert", "scale", "encoder", "muxer"}) {
             require_factory(profile.at("video")
                                 .at(section)
                                 .at("factory")
@@ -721,6 +715,7 @@ PipelineResult run_pipeline(const Json&                  profile,
         gst_object_unref(bus);
 
         result.provenance     = {{"gstreamer_version", gst_version_string()},
+                                 {"runtime", runtime_contract_provenance()},
                                  {"source", factory_provenance(source_name)},
                                  {"filter", factory_provenance(filter_name)},
                                  {"sink", factory_provenance("appsink")},
@@ -935,6 +930,7 @@ PipelineResult run_ground_cdg00_pipeline(
             result.last_frame_metadata  = probe_context.last_metadata;
         }
         result.provenance = {{"gstreamer_version", gst_version_string()},
+                             {"runtime", runtime_contract_provenance()},
                              {"source", factory_provenance(source_name)},
                              {"metadata_probe", factory_provenance(probe_name)},
                              {"convert", factory_provenance(convert_name)},

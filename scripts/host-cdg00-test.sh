@@ -140,6 +140,12 @@ ffprobe = json.loads(pathlib.Path(sys.argv[5]).read_text())
 assert stdout["status"] == "completed"
 assert stdout["runtime_profile"] == "msf.cdg00.parse-host.v1"
 assert stdout["frame_count"] == 64
+assert stdout["provenance"]["source"]["plugin"] == "msfsrc"
+assert stdout["provenance"]["source"]["plugin_license"] == "MIT"
+assert stdout["provenance"]["source"]["plugin_origin"] == \
+    "https://github.com/HotDryNoodle/image-process"
+assert stdout["provenance"]["runtime"]["meta_abi"] == \
+    "image-process.gst-meta.v1"
 plan = stdout["pipeline_plan"]
 assert plan["source"]["factory"] == "CDG00Src"
 metadata_contract = plan["metadata_probe"]["contract"]

@@ -1,0 +1,10 @@
+image-process internal GStreamer runtime
+
+The CDG0.0 framing/parser and image-directory source behavior were refactored
+from the MSF project at revision c4046d66a60da97cf4b28d20b9cedd9a9bffb254.
+The reviewed upstream declares the project license as MIT. Detailed path-level
+decisions and explicit exclusions are recorded in SOURCE_PROVENANCE.json.
+
+The metadata ABI and ImageFilterTest compatibility element are new
+image-process implementations. No GPL-marked DeepSort/Munkres/matrix source or
+LGPL-marked MSF generic meta/property implementation is included.

@@ -1,0 +1,27 @@
+option(
+  'internal_runtime',
+  type: 'feature',
+  value: 'enabled',
+  description: 'Build the image-process-owned GStreamer runtime plugins',
+)
+
+option(
+  'development_sources',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build OpenCV-backed development-only sources such as ImgScanSrc',
+)
+
+option(
+  'development_filters',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build non-production compatibility filters',
+)
+
+option(
+  'component_revision',
+  type: 'string',
+  value: '',
+  description: 'Immutable image-process revision recorded in runtime-manifest.json',
+)

@@ -27,7 +27,36 @@
     "frame_count": {"type": "integer", "minimum": 0},
     "artifact": {"$ref": "#/$defs/fileArtifact"},
     "meta_artifact": {"$ref": "#/$defs/fileArtifact"},
-    "provenance": {"type": "object"},
+    "provenance": {
+      "type": "object",
+      "required": ["gstreamer_version", "runtime", "source"],
+      "properties": {
+        "gstreamer_version": {"type": "string", "minLength": 1},
+        "runtime": {
+          "type": "object",
+          "required": [
+            "component",
+            "component_version",
+            "component_revision",
+            "meta_abi",
+            "source_provenance_sha256",
+            "runtime_manifest_sha256",
+            "build_features"
+          ],
+          "properties": {
+            "component": {"const": "image-process"},
+            "component_version": {"type": "string", "minLength": 1},
+            "component_revision": {"type": "string", "minLength": 1},
+            "meta_abi": {"const": "image-process.gst-meta.v1"},
+            "source_provenance_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "runtime_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "build_features": {"type": "object"}
+          },
+          "additionalProperties": false
+        },
+        "source": {"type": "object"}
+      }
+    },
     "resource_usage": {
       "type": "object",
       "required": ["wall_time_seconds", "cpu_time_seconds", "average_cpu_percent", "peak_observed_cpu_percent", "peak_rss_bytes", "input_bytes", "sampling"],

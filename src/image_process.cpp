@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <set>
 #include <vector>
@@ -173,15 +174,70 @@ class GroundCdg00Collector {
     bool                  published_   = false;
 };
 
-void verify_input_artifact(const Json&                  input,
-                           const std::filesystem::path& input_path) {
+std::uintmax_t verify_input_artifact(const Json&                  input,
+                                     const std::filesystem::path& input_path,
+                                     bool expect_directory) {
     std::error_code error;
-    if (std::filesystem::is_symlink(
-            std::filesystem::symlink_status(input_path, error))) {
+    const auto      status = std::filesystem::symlink_status(input_path, error);
+    if (std::filesystem::is_symlink(status)) {
         throw ImageProcessError(satellite::EXIT_VALIDATION,
                                 "input artifact path must not be a symlink");
     }
-    if (error || !std::filesystem::is_regular_file(input_path)) {
+    if (expect_directory) {
+        if (error || !std::filesystem::is_directory(status)) {
+            throw ImageProcessError(
+                satellite::EXIT_VALIDATION,
+                "image-sequence input artifact must be a directory");
+        }
+        if (input.contains("size_bytes") || input.contains("sha256")) {
+            throw ImageProcessError(
+                satellite::EXIT_VALIDATION,
+                "image-sequence directory does not accept file digest fields");
+        }
+        std::filesystem::recursive_directory_iterator       iterator(input_path,
+                                                                     error);
+        const std::filesystem::recursive_directory_iterator end;
+        if (error) {
+            throw ImageProcessError(
+                satellite::EXIT_VALIDATION,
+                "image-sequence directory cannot be inspected");
+        }
+        std::uintmax_t input_bytes = 0U;
+        for (; iterator != end;) {
+            const auto entry_status = iterator->symlink_status(error);
+            if (error || std::filesystem::is_symlink(entry_status) ||
+                (!std::filesystem::is_directory(entry_status) &&
+                 !std::filesystem::is_regular_file(entry_status))) {
+                throw ImageProcessError(
+                    satellite::EXIT_VALIDATION,
+                    "image-sequence directory contains an unsupported entry");
+            }
+            if (std::filesystem::is_regular_file(entry_status)) {
+                const std::uintmax_t entry_size =
+                    std::filesystem::file_size(iterator->path(), error);
+                if (error) {
+                    throw ImageProcessError(
+                        satellite::EXIT_VALIDATION,
+                        "image-sequence entry size cannot be inspected");
+                }
+                if (entry_size >
+                    std::numeric_limits<std::uintmax_t>::max() - input_bytes) {
+                    throw ImageProcessError(
+                        satellite::EXIT_VALIDATION,
+                        "image-sequence input size exceeds supported range");
+                }
+                input_bytes += entry_size;
+            }
+            iterator.increment(error);
+            if (error) {
+                throw ImageProcessError(
+                    satellite::EXIT_VALIDATION,
+                    "image-sequence directory cannot be inspected");
+            }
+        }
+        return input_bytes;
+    }
+    if (error || !std::filesystem::is_regular_file(status)) {
         throw ImageProcessError(satellite::EXIT_VALIDATION,
                                 "input artifact must be a regular file");
     }
@@ -196,6 +252,7 @@ void verify_input_artifact(const Json&                  input,
         throw ImageProcessError(satellite::EXIT_VALIDATION,
                                 "input artifact digest does not match request");
     }
+    return actual_size;
 }
 
 }  // namespace
@@ -470,9 +527,13 @@ Json run(const Json&                  request,
 
     std::filesystem::create_directories(work_dir);
     std::filesystem::path input_path;
+    std::uintmax_t        input_bytes = 0U;
     if (request.at("input").contains("path")) {
         input_path = request.at("input").at("path").get<std::string>();
-        verify_input_artifact(request.at("input"), input_path);
+        const bool expect_directory =
+            profile.at("source").at("factory") == "ImgScanSrc";
+        input_bytes = verify_input_artifact(request.at("input"), input_path,
+                                            expect_directory);
     }
 
     const std::size_t profile_limit =
@@ -513,9 +574,8 @@ Json run(const Json&                  request,
                                 "pipeline reached EOS without frames");
     }
 
-    Json resource_usage = pipeline_result.resource_usage;
-    resource_usage["input_bytes"] =
-        input_path.empty() ? 0U : std::filesystem::file_size(input_path);
+    Json resource_usage           = pipeline_result.resource_usage;
+    resource_usage["input_bytes"] = input_bytes;
     if (ground_collector) {
         if (ground_collector->frame_count() != pipeline_result.frame_count) {
             throw ImageProcessError(

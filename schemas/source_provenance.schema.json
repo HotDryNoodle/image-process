@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/HotDryNoodle/image-process/schemas/source_provenance.schema.json",
+  "title": "image-process source provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "reviewed_revision",
+    "upstream",
+    "history_status",
+    "history_import",
+    "entries",
+    "excluded"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "reviewed_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "upstream": {"type": "string", "format": "uri"},
+    "history_status": {
+      "enum": ["pending_commit_gate", "preserved_bounded_import"]
+    },
+    "history_import": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/history_import"}
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/entry"}
+    },
+    "excluded": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/exclusion"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "history_status": {"const": "preserved_bounded_import"}
+        }
+      },
+      "then": {
+        "properties": {
+          "history_import": {"$ref": "#/$defs/history_import"},
+          "entries": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "treatment": {"const": "refactored"}
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "import_commit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "import_commit": {"type": "null"}
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "history_import": {"type": "null"},
+          "entries": {
+            "items": {
+              "properties": {
+                "import_commit": {"type": "null"}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "history_import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["merge_commit", "filtered_tip", "approved_paths", "commit_map"],
+      "properties": {
+        "merge_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "filtered_tip": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "approved_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "commit_map": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["original_commit", "imported_commit"],
+            "properties": {
+              "original_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "imported_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+            }
+          }
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_path",
+        "origin_paths",
+        "origin_revision",
+        "import_commit",
+        "license",
+        "license_evidence",
+        "owner",
+        "treatment",
+        "bundle_eligible"
+      ],
+      "properties": {
+        "target_path": {"type": "string", "minLength": 1},
+        "origin_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "origin_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "import_commit": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+          ]
+        },
+        "license": {"const": "MIT"},
+        "license_evidence": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "treatment": {"enum": ["refactored", "independent_rewrite"]},
+        "bundle_eligible": {"const": true},
+        "notes": {"type": "string"}
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin_glob", "license_status", "decision"],
+      "properties": {
+        "origin_glob": {"type": "string", "minLength": 1},
+        "license_status": {
+          "enum": ["explicit_lgpl", "explicit_gpl", "unreviewed"]
+        },
+        "decision": {"const": "excluded_fail_closed"},
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}

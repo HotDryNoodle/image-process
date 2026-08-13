@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "component": "image-process",
+  "component_version": "@COMPONENT_VERSION@",
+  "component_revision": "@IMAGE_PROCESS_REVISION@",
+  "meta_abi": "image-process.gst-meta.v1",
+  "plugins": [
+    {
+      "plugin": "msfsrc",
+      "factories": [@SOURCE_FACTORIES@]
+    }@FILTER_PLUGIN_ENTRY@
+  ],
+  "source_provenance_sha256": "@SOURCE_PROVENANCE_SHA256@",
+  "build_features": {
+    "internal_runtime": true,
+    "opencv_development_sources": @OPENCV_DEVELOPMENT_SOURCES@,
+    "development_filters": @DEVELOPMENT_FILTERS@
+  }
+}
