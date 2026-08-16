@@ -65,7 +65,7 @@
   },
   "entries": [
     {
-      "target_path": "runtime/gst/sources/cdg00_src.cpp",
+      "target_path": "src/gst/sources/cdg00_src.cpp",
       "origin_paths": [
         "source/src/cdg00_reader.hpp",
         "source/src/cdg00_reader.cpp"
@@ -74,13 +74,13 @@
       "import_commit": "f101027257384736389fd780cccfda929a99e785",
       "license": "MIT",
       "license_evidence": "upstream meson.build project license and docs/README.md license declaration; source file has no conflicting per-file marker",
-      "owner": "image-process/runtime/gst/sources",
+      "owner": "image-process/src/gst/sources",
       "treatment": "refactored",
       "bundle_eligible": true,
       "notes": "Preserves CDG0.0 framing, parameter parsing and 10-to-8-bit behavior without the upstream generic factory/property framework."
     },
     {
-      "target_path": "runtime/gst/sources/img_scan_src.cpp",
+      "target_path": "src/gst/sources/img_scan_src.cpp",
       "origin_paths": [
         "source/src/img_scan_src.hpp",
         "source/src/img_scan_src.cpp"
@@ -89,13 +89,13 @@
       "import_commit": "f101027257384736389fd780cccfda929a99e785",
       "license": "MIT",
       "license_evidence": "upstream meson.build project license and docs/README.md license declaration; source file has no conflicting per-file marker",
-      "owner": "image-process/runtime/gst/sources",
+      "owner": "image-process/src/gst/sources",
       "treatment": "refactored",
       "bundle_eligible": true,
       "notes": "Uses C++17 filesystem and the image-process meta ABI; OpenCV remains a build feature."
     },
     {
-      "target_path": "runtime/gst/filters/image_filter_test.cpp",
+      "target_path": "src/gst/filters/image_filter_test.cpp",
       "origin_paths": [
         "source/filter/image_filter_test_processor.hpp",
         "source/filter/image_filter_test_processor.cpp"
@@ -104,13 +104,13 @@
       "import_commit": null,
       "license": "MIT",
       "license_evidence": "new image-process implementation; no source text or algorithm imported from the upstream file",
-      "owner": "image-process/runtime/gst/filters",
+      "owner": "image-process/src/gst/filters",
       "treatment": "independent_rewrite",
       "bundle_eligible": true,
       "notes": "Factory-name compatibility only; intentionally implemented as a deterministic passthrough fixture filter."
     },
     {
-      "target_path": "runtime/meta/src/gst_meta_v1.cpp",
+      "target_path": "src/gst/meta/gst_meta_v1.cpp",
       "origin_paths": [
         "source/public/meta/msf_meta.hpp",
         "source/public/meta/meta_cdg00_impl.hpp",
@@ -122,7 +122,7 @@
       "import_commit": null,
       "license": "MIT",
       "license_evidence": "new image-process C ABI implementation; upstream meta headers were reviewed as contract evidence but excluded from import",
-      "owner": "image-process/runtime/meta",
+      "owner": "image-process/src/gst/meta",
       "treatment": "independent_rewrite",
       "bundle_eligible": true,
       "notes": "Replaces private native layout interpretation with fixed-width version and struct-size checks."

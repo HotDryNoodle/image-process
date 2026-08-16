@@ -24,12 +24,15 @@ canonical in-tree `sdk/` at a specific `satellite-workspace` commit; the SDK no
 longer has a separate repository. Workspace builds replace this wrap with the
 current parent repository's in-tree `sdk/` through the bootstrap scripts.
 
-The factories used by the current `msf.*` compatibility profiles are built from
-the bounded source closure under `runtime/`; an external MSF checkout is not a
-normal build input. `SOURCE_PROVENANCE.json` records path-level origin,
+All first-party source lives under `src/`: `src/tool` for the CLI, pipeline
+plan, artifact publisher and collector; `src/gst` for GStreamer plugins and the
+versioned meta ABI; `src/backends` for later MPS/Lynxi filters. The factories
+used by the current `msf.*` compatibility profiles are built from the bounded
+source closure under `src/gst/`; an external MSF checkout is not a normal build
+input. `SOURCE_PROVENANCE.json` records path-level origin,
 revision, license review, treatment, and fail-closed exclusions. The source
 plugins and collector exchange CDG0.0 data only through the versioned C ABI in
-`runtime/meta/include/image_process/gst_meta_v1.h`.
+`src/gst/meta/image_process/gst_meta_v1.h`.
 
 For a build-tree run, point the process-level runtime path at the same build:
 

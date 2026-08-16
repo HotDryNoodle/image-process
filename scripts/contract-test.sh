@@ -106,7 +106,7 @@ if jsonschema is not None:
     )
     jsonschema.validate(runtime_manifest, runtime_schema)
 
-collector = (repo / "src/pipeline.cpp").read_text()
+collector = (repo / "src/tool/pipeline.cpp").read_text()
 assert "MsfGenericMetaLayout" not in collector
 assert "Cdg00ParameterLayout" not in collector
 assert "msf.cdg00.native-v1-host-adapter" not in collector

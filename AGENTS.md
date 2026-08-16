@@ -10,11 +10,14 @@ remote is `https://github.com/HotDryNoodle/image-process.git`.
 - Runtime profiles under `configs/runtime/` are the only pipeline allowlist.
 - Pushbroom profiles must be detection-only; stare profiles must contain the
   tracking role.
-- Keep reusable runtime source under `runtime/`; never vendor the whole MSF
-  tree or add a long-lived MSF submodule/subtree. Every MSF-derived path must
-  be bounded by `SOURCE_PROVENANCE.json`, retain origin revision/path/license,
-  and pass the fail-closed license inventory before entering a bundle.
+- Keep all first-party source under `src/`, split by path: `src/tool` for the
+  CLI/pipeline/artifact collector, `src/gst` for GStreamer plugins and the
+  versioned meta ABI, and `src/backends` for later MPS/Lynxi code. Never
+  vendor the whole MSF tree or add a long-lived MSF submodule/subtree. Every
+  MSF-derived path must be bounded by `SOURCE_PROVENANCE.json`, retain origin
+  revision/path/license, and pass the fail-closed license inventory before
+  entering a bundle.
 - Runtime elements and the collector exchange metadata only through the
-  versioned C ABI in `runtime/meta/include/`; do not interpret plugin-private
-  native layouts in product code.
+  versioned C ABI in `src/gst/meta/image_process/`; do not interpret
+  plugin-private native layouts in product code.
 - Run `scripts/contract-test.sh build/image-process` before the commit gate.

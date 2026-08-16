@@ -20,7 +20,7 @@ gstreamer_app_dep = dependency('gstreamer-app-1.0', version: '>=1.20')
 gstreamer_video_dep = dependency('gstreamer-video-1.0', version: '>=1.20')
 glib_dep = dependency('glib-2.0')
 
-runtime_include = include_directories('runtime/meta/include')
+gst_meta_include = include_directories('src/gst/meta')
 runtime_install_dir = get_option('libdir') / 'satellite/image-process/gstreamer-1.0'
 runtime_cpp_args = [
   '-DPACKAGE="image-process"',
@@ -29,8 +29,8 @@ runtime_cpp_args = [
 
 gst_meta_lib = shared_library(
   'imageprocess-gstmeta',
-  'runtime/meta/src/gst_meta_v1.cpp',
-  include_directories: runtime_include,
+  'src/gst/meta/gst_meta_v1.cpp',
+  include_directories: gst_meta_include,
   dependencies: [gstreamer_dep, glib_dep],
   version: '1.0.0',
   soversion: '1',
@@ -40,7 +40,7 @@ gst_meta_lib = shared_library(
 
 gst_meta_dep = declare_dependency(
   link_with: gst_meta_lib,
-  include_directories: runtime_include,
+  include_directories: gst_meta_include,
   dependencies: [gstreamer_dep, glib_dep],
 )
 
@@ -100,13 +100,13 @@ runtime_manifest = configure_file(
 
 if internal_runtime_option.enabled() or internal_runtime_option.auto()
   source_plugin_sources = files(
-    'runtime/gst/sources/cdg00_src.cpp',
-    'runtime/gst/sources/plugin_init.cpp',
+    'src/gst/sources/cdg00_src.cpp',
+    'src/gst/sources/plugin_init.cpp',
   )
   source_plugin_cpp_args = runtime_cpp_args + ['-DIP_HAVE_OPENCV=0']
   source_plugin_dependencies = [gstreamer_dep, gstreamer_base_dep, gst_meta_dep]
   if opencv_dep.found()
-    source_plugin_sources += files('runtime/gst/sources/img_scan_src.cpp')
+    source_plugin_sources += files('src/gst/sources/img_scan_src.cpp')
     source_plugin_cpp_args = runtime_cpp_args + ['-DIP_HAVE_OPENCV=1']
     source_plugin_dependencies += opencv_dep
   endif
@@ -124,8 +124,8 @@ if internal_runtime_option.enabled() or internal_runtime_option.auto()
     shared_module(
       'gstmsffilters',
       files(
-        'runtime/gst/filters/image_filter_test.cpp',
-        'runtime/gst/filters/plugin_init.cpp',
+        'src/gst/filters/image_filter_test.cpp',
+        'src/gst/filters/plugin_init.cpp',
       ),
       dependencies: [gstreamer_dep, gstreamer_base_dep],
       cpp_args: runtime_cpp_args,
@@ -138,11 +138,11 @@ endif
 image_process_lib = static_library(
   'image_process',
   files(
-    'src/artifact.cpp',
-    'src/image_process.cpp',
-    'src/pipeline.cpp',
+    'src/tool/artifact.cpp',
+    'src/tool/image_process.cpp',
+    'src/tool/pipeline.cpp',
   ),
-  include_directories: include_directories('src'),
+  include_directories: include_directories('src/tool'),
   dependencies: [
     satellite_common_dep,
     gst_meta_dep,
@@ -160,8 +160,8 @@ image_process_lib = static_library(
 
 image_process_exe = executable(
   'image-process',
-  'src/main.cpp',
-  include_directories: include_directories('src'),
+  'src/tool/main.cpp',
+  include_directories: include_directories('src/tool'),
   link_with: image_process_lib,
   dependencies: [satellite_common_dep],
   cpp_args: ['-DIMAGE_PROCESS_VERSION="@0@"'.format(meson.project_version())],
@@ -200,7 +200,7 @@ install_data(
 )
 
 install_headers(
-  'runtime/meta/include/image_process/gst_meta_v1.h',
+  'src/gst/meta/image_process/gst_meta_v1.h',
   subdir: 'image-process/image_process',
 )
 
