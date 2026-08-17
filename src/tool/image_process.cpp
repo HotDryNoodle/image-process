@@ -255,6 +255,60 @@ std::uintmax_t verify_input_artifact(const Json&                  input,
     return actual_size;
 }
 
+std::filesystem::path category_map_path(const std::string& map_id) {
+    if (const char* data_root = std::getenv("IMAGE_PROCESS_DATA_ROOT")) {
+        return std::filesystem::path(data_root) / "image-process" / "runtime" /
+               "category-maps" / (map_id + ".json");
+    }
+    if (const char* source_root = std::getenv("IMAGE_PROCESS_SOURCE_ROOT")) {
+        return std::filesystem::path(source_root) / "configs" / "runtime" /
+               "category-maps" / (map_id + ".json");
+    }
+    return std::filesystem::path(IMAGE_PROCESS_SOURCE_ROOT) / "configs" /
+           "runtime" / "category-maps" / (map_id + ".json");
+}
+
+Json jsonl_artifact(const std::filesystem::path& path,
+                    const std::string&           relative,
+                    const std::string&           schema) {
+    return {{"path", relative},
+            {"schema", schema},
+            {"media_type", "application/x-ndjson"},
+            {"size_bytes", std::filesystem::file_size(path)},
+            {"sha256", sha256_file(path)}};
+}
+
+std::size_t count_jsonl_array(const std::filesystem::path& path,
+                              const std::string&           key) {
+    std::ifstream input(path);
+    if (!input) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                "cannot read product JSONL: " + path.string());
+    }
+    std::size_t total = 0;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) { continue; }
+        const Json record = Json::parse(line);
+        total += record.at(key).size();
+    }
+    return total;
+}
+
+std::size_t count_jsonl_lines(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                "cannot read product JSONL: " + path.string());
+    }
+    std::size_t total = 0;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty()) { ++total; }
+    }
+    return total;
+}
+
 }  // namespace
 
 ImageProcessError::ImageProcessError(int exit_code, const std::string& message)
@@ -371,6 +425,16 @@ ValidationResult validate_request(const Json& request) {
     }
     const std::string sensor_id = require_string(sensor, "id", result);
     if (sensor_id.empty()) { return result; }
+    if (sensor_id == "sat-a.area-array" && mode == "pushbroom") {
+        result.message =
+            "sat-A area-array does not accept pushbroom acquisition_mode";
+        return result;
+    }
+    if (sensor_id == "sat-c.line-array" && mode == "stare") {
+        result.message =
+            "sat-C line-array does not accept stare acquisition_mode";
+        return result;
+    }
 
     const Json& input = require_object_member(request, "input", result);
     if (!result.message.empty()) { return result; }
@@ -443,6 +507,32 @@ ValidationResult validate_request(const Json& request) {
 
     const std::string role        = profile.at("filter").value("role", "");
     const std::string output_mode = profile.value("output_mode", "frames");
+    if (output_mode == "product_text") {
+        if (profile.value("filter_backend", "") != "mock") {
+            result.message =
+                "product_text profiles require filter_backend=mock";
+            return result;
+        }
+        if (!profile.contains("geometry") ||
+            !profile.at("geometry").is_object() ||
+            profile.at("geometry").value("factory", "") !=
+                "ImageProcessGeometryNormalize") {
+            result.message =
+                "product_text profiles require ImageProcessGeometryNormalize";
+            return result;
+        }
+        if (!profile.contains("category_map") ||
+            !profile.at("category_map").is_string() ||
+            profile.at("category_map").get<std::string>().empty()) {
+            result.message = "product_text profiles require category_map";
+            return result;
+        }
+        if (role != "detection" && role != "tracking") {
+            result.message =
+                "product_text profiles require detection or tracking role";
+            return result;
+        }
+    }
     if (output_mode == "ground_cdg00" && role != "parse") {
         result.message = "ground CDG0.0 profile requires the parse role";
         return result;
@@ -542,10 +632,48 @@ Json run(const Json&                  request,
         request.at("processing").value("max_frames", profile_limit);
     const bool ground_cdg00 =
         profile.value("output_mode", "") == "ground_cdg00";
+    const bool product_text =
+        profile.value("output_mode", "") == "product_text";
     std::vector<ProcessedFrame>           frames;
     PipelineResult                        pipeline_result;
     std::unique_ptr<GroundCdg00Collector> ground_collector;
-    if (ground_cdg00) {
+    if (product_text) {
+        for (const auto& path :
+             {work_dir / "targets.jsonl", work_dir / "targets.jsonl.partial",
+              work_dir / "tracks.jsonl", work_dir / "tracks.jsonl.partial",
+              work_dir / "image-meta.jsonl",
+              work_dir / "image-meta.jsonl.partial", work_dir / "result.json",
+              work_dir / "pipeline-plan.json"}) {
+            if (std::filesystem::exists(path)) {
+                throw ImageProcessError(
+                    satellite::EXIT_VALIDATION,
+                    "product text output path already exists: " +
+                        path.string());
+            }
+        }
+        const std::string map_id =
+            profile.at("category_map").get<std::string>();
+        const auto map_path = category_map_path(map_id);
+        if (!std::filesystem::is_regular_file(map_path)) {
+            throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                    "category map is not installed: " + map_id);
+        }
+        const Json sink_properties = {
+            {"work-dir", work_dir.string()},
+            {"mode", request.at("acquisition_mode") == "pushbroom" ? "targets"
+                                                                   : "tracks"},
+            {"sensor-id", request.at("sensor").at("id")},
+            {"acquisition-mode", request.at("acquisition_mode")},
+            {"category-map-path", map_path.string()}};
+        pipeline_result = run_product_text_pipeline(
+            profile, input_path, max_frames, sink_properties);
+        pipeline_result.provenance["source_camera_meta"] =
+            request.at("acquisition_mode") == "pushbroom" ? "cdg00.window_start"
+                                                          : "area-frame";
+        pipeline_result.provenance["source_artifact_sha256"] =
+            sha256_file(input_path);
+    }
+    else if (ground_cdg00) {
         for (const auto& path :
              {work_dir / "video.ogv", work_dir / "video.ogv.partial",
               work_dir / "video.mp4", work_dir / "video.mp4.partial",
@@ -576,7 +704,44 @@ Json run(const Json&                  request,
 
     Json resource_usage           = pipeline_result.resource_usage;
     resource_usage["input_bytes"] = input_bytes;
-    if (ground_collector) {
+    if (product_text) {
+        const bool targets_mode = request.at("acquisition_mode") == "pushbroom";
+        const std::filesystem::path role_path =
+            work_dir / (targets_mode ? "targets.jsonl" : "tracks.jsonl");
+        const std::filesystem::path meta_path = work_dir / "image-meta.jsonl";
+        if (!std::filesystem::exists(role_path) ||
+            !std::filesystem::exists(meta_path)) {
+            throw ImageProcessError(
+                satellite::EXIT_FATAL,
+                "product text artifacts were not published");
+        }
+        const std::size_t line_count = count_jsonl_lines(role_path);
+        if (line_count != pipeline_result.frame_count ||
+            count_jsonl_lines(meta_path) != pipeline_result.frame_count) {
+            throw ImageProcessError(
+                satellite::EXIT_FATAL,
+                "product JSONL line count does not match processed frames");
+        }
+        Json artifacts = {
+            {"image_meta", jsonl_artifact(meta_path, "image-meta.jsonl",
+                                          "image-process.image-meta.v1")}};
+        if (targets_mode) {
+            artifacts["targets"] = jsonl_artifact(
+                role_path, "targets.jsonl", "image-process.target-frame.v1");
+            output["target_count"] = count_jsonl_array(role_path, "targets");
+        }
+        else {
+            artifacts["tracks"] = jsonl_artifact(
+                role_path, "tracks.jsonl", "image-process.track-frame.v1");
+            output["track_observation_count"] =
+                count_jsonl_array(role_path, "tracks");
+        }
+        output["image_id"]  = "sha256:" + sha256_file(input_path);
+        output["artifacts"] = artifacts;
+        resource_usage["metadata_output_bytes"] =
+            artifacts.at("image_meta").at("size_bytes");
+    }
+    else if (ground_collector) {
         if (ground_collector->frame_count() != pipeline_result.frame_count) {
             throw ImageProcessError(
                 satellite::EXIT_FATAL,

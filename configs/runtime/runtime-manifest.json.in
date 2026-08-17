@@ -8,12 +8,13 @@
     {
       "plugin": "msfsrc",
       "factories": [@SOURCE_FACTORIES@]
-    }@FILTER_PLUGIN_ENTRY@
+    }@PRODUCT_PLUGIN_ENTRY@@FILTER_PLUGIN_ENTRY@
   ],
   "source_provenance_sha256": "@SOURCE_PROVENANCE_SHA256@",
   "build_features": {
     "internal_runtime": true,
     "opencv_development_sources": @OPENCV_DEVELOPMENT_SOURCES@,
-    "development_filters": @DEVELOPMENT_FILTERS@
+    "development_filters": @DEVELOPMENT_FILTERS@,
+    "mock_filters": @MOCK_FILTERS@
   }
 }

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "request_id": "m4-sat-a-stare-001",
+  "trace_id": "trace-m4-sat-a-001",
+  "acquisition_mode": "stare",
+  "sensor": {"id": "sat-a.area-array"},
+  "input": {
+    "artifact_ref": "artifact://raw/cdg00/20250404142111_A1_0",
+    "path": "data/20250404142111_A1_0.dat",
+    "media_type": "application/x-cdg00",
+    "size_bytes": 52822016,
+    "sha256": "336a30600aacb1a747829c717d7f71abce8a24ff3744ae7698d2d91da3def01e"
+  },
+  "processing": {"runtime_profile": "mock.sat-a.stare.v1"}
+}

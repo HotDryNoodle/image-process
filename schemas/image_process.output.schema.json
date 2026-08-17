@@ -13,6 +13,18 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "additionalProperties": false
+    },
+    "productTextArtifact": {
+      "type": "object",
+      "required": ["path", "schema", "media_type", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "schema": {"type": "string", "minLength": 1},
+        "media_type": {"type": "string", "minLength": 1},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -25,8 +37,20 @@
     "runtime_profile": {"type": "string"},
     "pipeline_plan": {"type": "object"},
     "frame_count": {"type": "integer", "minimum": 0},
+    "image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "target_count": {"type": "integer", "minimum": 0},
+    "track_observation_count": {"type": "integer", "minimum": 0},
     "artifact": {"$ref": "#/$defs/fileArtifact"},
     "meta_artifact": {"$ref": "#/$defs/fileArtifact"},
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "targets": {"$ref": "#/$defs/productTextArtifact"},
+        "tracks": {"$ref": "#/$defs/productTextArtifact"},
+        "image_meta": {"$ref": "#/$defs/productTextArtifact"}
+      },
+      "additionalProperties": false
+    },
     "provenance": {
       "type": "object",
       "required": ["gstreamer_version", "runtime", "source"],

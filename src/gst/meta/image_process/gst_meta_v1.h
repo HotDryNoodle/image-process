@@ -12,6 +12,9 @@
 G_BEGIN_DECLS
 
 #define IP_GST_META_ABI_VERSION_V1 UINT32_C(1)
+#define IP_GST_META_ABI_NAME "image-process.gst-meta.v1"
+#define IP_GST_META_MAX_TARGETS_PER_FRAME_V1 256U
+#define IP_GST_META_GEOMETRY_ID_MAX_V1 64U
 
 /** @brief One CDG0.0 parameter sample in source units. */
 typedef struct IpCdg00SampleV1 {
@@ -94,6 +97,146 @@ gboolean ip_buffer_add_image_dir_meta(GstBuffer*              buffer,
 /** @brief Copy image-directory v1 metadata from a buffer. */
 gboolean ip_buffer_get_image_dir_meta(const GstBuffer*  buffer,
                                       IpImageDirMetaV1* value);
+
+/** @brief Area-array frame parameters derived from a CDG0.0 sample. */
+typedef struct IpAreaFrameMetaV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint8_t  valid;
+    uint8_t  channel_id;
+    uint8_t  strip_number;
+    uint8_t  time_sync_status;
+    uint32_t row_number;
+    uint32_t camera_seconds;
+    uint32_t camera_microseconds;
+    uint32_t exposure_time_ns;
+} IpAreaFrameMetaV1;
+
+/** @brief Axis-aligned original→filter map: x' = scale_x * x + offset_x. */
+typedef struct IpScaleOffset2DV1 {
+    uint32_t struct_size;
+    uint32_t reserved_0;
+    double   scale_x;
+    double   scale_y;
+    double   offset_x;
+    double   offset_y;
+} IpScaleOffset2DV1;
+
+/** @brief Geometry stamped by ImageProcessGeometryNormalize. */
+typedef struct IpGeometryMetaV1 {
+    uint32_t          abi_version;
+    uint32_t          struct_size;
+    uint32_t          original_width;
+    uint32_t          original_height;
+    uint32_t          filter_width;
+    uint32_t          filter_height;
+    char              geometry_id[IP_GST_META_GEOMETRY_ID_MAX_V1];
+    IpScaleOffset2DV1 map;
+} IpGeometryMetaV1;
+
+/** @brief Half-open bbox in filter-input continuous zero-origin coordinates. */
+typedef struct IpBBoxV1 {
+    uint32_t struct_size;
+    uint32_t reserved_0;
+    double   x_min;
+    double   y_min;
+    double   x_max;
+    double   y_max;
+} IpBBoxV1;
+
+/** @brief One detection target in filter-input coordinates. */
+typedef struct IpDetectionTargetV1 {
+    uint32_t struct_size;
+    uint32_t class_index;
+    double   confidence;
+    IpBBoxV1 bbox;
+} IpDetectionTargetV1;
+
+/** @brief Detection frame header. Count is exposed via accessors. */
+typedef struct IpDetectionFrameV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t frame_id;
+    uint32_t target_count;
+} IpDetectionFrameV1;
+
+/** @brief One tracked target in filter-input coordinates. */
+typedef struct IpTrackingTargetV1 {
+    uint32_t struct_size;
+    uint32_t reserved_0;
+    uint64_t track_id;
+    uint32_t class_index;
+    uint32_t reserved_1;
+    IpBBoxV1 bbox;
+} IpTrackingTargetV1;
+
+/** @brief Tracking frame header. */
+typedef struct IpTrackingFrameV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t frame_id;
+    uint32_t tracked_target_count;
+} IpTrackingFrameV1;
+
+/** @brief Return the area-frame metadata API type. */
+GType ip_area_frame_meta_api_get_type(void);
+/** @brief Return the area-frame GstMeta registration record. */
+const GstMetaInfo* ip_area_frame_meta_get_info(void);
+/** @brief Attach a validated area-frame v1 value; rejects duplicates. */
+gboolean ip_buffer_add_area_frame_meta(GstBuffer*               buffer,
+                                       const IpAreaFrameMetaV1* value);
+/** @brief Copy area-frame v1 metadata; rejects a foreign impl. */
+gboolean ip_buffer_get_area_frame_meta(const GstBuffer*   buffer,
+                                       IpAreaFrameMetaV1* value);
+
+/** @brief Return the geometry metadata API type. */
+GType ip_geometry_meta_api_get_type(void);
+/** @brief Return the geometry GstMeta registration record. */
+const GstMetaInfo* ip_geometry_meta_get_info(void);
+/** @brief Attach a validated geometry v1 value; rejects duplicates. */
+gboolean ip_buffer_add_geometry_meta(GstBuffer*              buffer,
+                                     const IpGeometryMetaV1* value);
+/** @brief Copy geometry v1 metadata; rejects a foreign impl. */
+gboolean ip_buffer_get_geometry_meta(const GstBuffer*  buffer,
+                                     IpGeometryMetaV1* value);
+
+/** @brief Return the detection metadata API type. */
+GType ip_detection_meta_api_get_type(void);
+/** @brief Return the detection GstMeta registration record. */
+const GstMetaInfo* ip_detection_meta_get_info(void);
+/**
+ * @brief Attach one detection frame and up to 256 targets.
+ * @param targets May be NULL when frame->target_count is 0.
+ */
+gboolean ip_buffer_add_detection_meta(GstBuffer*                 buffer,
+                                      const IpDetectionFrameV1*  frame,
+                                      const IpDetectionTargetV1* targets);
+/** @brief Copy the detection frame header. */
+gboolean ip_buffer_get_detection_frame(const GstBuffer*    buffer,
+                                       IpDetectionFrameV1* frame);
+/** @brief Copy one detection target by index. */
+gboolean ip_buffer_get_detection_target(const GstBuffer*     buffer,
+                                        uint32_t             index,
+                                        IpDetectionTargetV1* target);
+
+/** @brief Return the tracking metadata API type. */
+GType ip_tracking_meta_api_get_type(void);
+/** @brief Return the tracking GstMeta registration record. */
+const GstMetaInfo* ip_tracking_meta_get_info(void);
+/**
+ * @brief Attach one tracking frame and up to 256 targets.
+ * @param targets May be NULL when frame->tracked_target_count is 0.
+ */
+gboolean ip_buffer_add_tracking_meta(GstBuffer*                buffer,
+                                     const IpTrackingFrameV1*  frame,
+                                     const IpTrackingTargetV1* targets);
+/** @brief Copy the tracking frame header. */
+gboolean ip_buffer_get_tracking_frame(const GstBuffer*   buffer,
+                                      IpTrackingFrameV1* frame);
+/** @brief Copy one tracking target by index. */
+gboolean ip_buffer_get_tracking_target(const GstBuffer*    buffer,
+                                       uint32_t            index,
+                                       IpTrackingTargetV1* target);
 
 G_END_DECLS
 

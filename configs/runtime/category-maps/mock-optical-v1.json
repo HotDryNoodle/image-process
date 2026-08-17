@@ -1,0 +1,8 @@
+{
+  "id": "mock-optical-v1",
+  "schema_version": "1.0",
+  "classes": [
+    {"index": 0, "type": "mock.vehicle"},
+    {"index": 1, "type": "mock.ship"}
+  ]
+}

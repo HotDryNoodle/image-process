@@ -80,6 +80,8 @@
       "timeout_sec": 300
     },
     "msf.cdg00.pushbroom.v1": {
+      "legacy": true,
+      "acceptance": false,
       "evidence_class": "development",
       "sensor_id": "cdg00",
       "acquisition_mode": "pushbroom",
@@ -97,6 +99,8 @@
       "timeout_sec": 120
     },
     "msf.cdg00.stare.v1": {
+      "legacy": true,
+      "acceptance": false,
       "evidence_class": "development",
       "sensor_id": "cdg00",
       "acquisition_mode": "stare",
@@ -111,6 +115,250 @@
         "properties": {}
       },
       "max_frames": 512,
+      "timeout_sec": 120
+    },
+    "mock.sat-c.pushbroom.v1": {
+      "evidence_class": "host_mock_filter",
+      "filter_backend": "mock",
+      "output_mode": "product_text",
+      "sensor_id": "sat-c.line-array",
+      "acquisition_mode": "pushbroom",
+      "category_map": "mock-optical-v1",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {
+          "channel": 0,
+          "image-height": 4096,
+          "stride-lines": 128,
+          "fps": 30.0,
+          "num-buffers": 1
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "identity.v1",
+          "scale-x": 1.0,
+          "scale-y": 1.0,
+          "offset-x": 0.0,
+          "offset-y": 0.0
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessMockDetector",
+        "role": "detection",
+        "properties": {
+          "bbox-x-min": 100.0,
+          "bbox-y-min": 40.0,
+          "bbox-x-max": 140.0,
+          "bbox-y-max": 80.0,
+          "class-index": 1,
+          "confidence": 0.9,
+          "emit-targets": true
+        }
+      },
+      "max_frames": 1,
+      "timeout_sec": 120
+    },
+    "mock.sat-c.pushbroom.zero.v1": {
+      "evidence_class": "host_mock_filter",
+      "filter_backend": "mock",
+      "output_mode": "product_text",
+      "sensor_id": "sat-c.line-array",
+      "acquisition_mode": "pushbroom",
+      "category_map": "mock-optical-v1",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {
+          "channel": 0,
+          "image-height": 4096,
+          "stride-lines": 128,
+          "fps": 30.0,
+          "num-buffers": 1
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "identity.v1",
+          "scale-x": 1.0,
+          "scale-y": 1.0,
+          "offset-x": 0.0,
+          "offset-y": 0.0
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessMockDetector",
+        "role": "detection",
+        "properties": {
+          "emit-targets": false
+        }
+      },
+      "max_frames": 1,
+      "timeout_sec": 120
+    },
+    "mock.sat-c.pushbroom.zero-frame.v1": {
+      "evidence_class": "host_mock_filter",
+      "filter_backend": "mock",
+      "output_mode": "product_text",
+      "sensor_id": "sat-c.line-array",
+      "acquisition_mode": "pushbroom",
+      "category_map": "mock-optical-v1",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {
+          "channel": 0,
+          "image-height": 4096,
+          "stride-lines": 128,
+          "fps": 30.0,
+          "num-buffers": 0
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "identity.v1",
+          "scale-x": 1.0,
+          "scale-y": 1.0,
+          "offset-x": 0.0,
+          "offset-y": 0.0
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessMockDetector",
+        "role": "detection",
+        "properties": {
+          "emit-targets": false
+        }
+      },
+      "max_frames": 1,
+      "timeout_sec": 30
+    },
+    "mock.sat-c.pushbroom.scale-pad.v1": {
+      "evidence_class": "host_mock_filter",
+      "filter_backend": "mock",
+      "output_mode": "product_text",
+      "sensor_id": "sat-c.line-array",
+      "acquisition_mode": "pushbroom",
+      "category_map": "mock-optical-v1",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {
+          "channel": 0,
+          "image-height": 4096,
+          "stride-lines": 128,
+          "fps": 30.0,
+          "num-buffers": 1
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "scale-pad.v1",
+          "scale-x": 0.5,
+          "scale-y": 0.5,
+          "offset-x": 64.0,
+          "offset-y": 64.0,
+          "filter-width": 2176,
+          "filter-height": 2176
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessMockDetector",
+        "role": "detection",
+        "properties": {
+          "bbox-x-min": 114.0,
+          "bbox-y-min": 84.0,
+          "bbox-x-max": 134.0,
+          "bbox-y-max": 104.0,
+          "class-index": 1,
+          "confidence": 0.9,
+          "emit-targets": true
+        }
+      },
+      "max_frames": 1,
+      "timeout_sec": 120
+    },
+    "mock.sat-a.stare.v1": {
+      "evidence_class": "host_mock_filter",
+      "filter_backend": "mock",
+      "output_mode": "product_text",
+      "sensor_id": "sat-a.area-array",
+      "acquisition_mode": "stare",
+      "category_map": "mock-optical-v1",
+      "source": {
+        "factory": "CDG00AreaRepeatSrc",
+        "input_path_property": "location",
+        "properties": {
+          "image-height": 4096,
+          "repeat-count": 3,
+          "fps": 30.0
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "identity.v1",
+          "scale-x": 1.0,
+          "scale-y": 1.0,
+          "offset-x": 0.0,
+          "offset-y": 0.0
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessMockTracker",
+        "role": "tracking",
+        "properties": {
+          "bbox-x-min": 20.0,
+          "bbox-y-min": 30.0,
+          "bbox-x-max": 60.0,
+          "bbox-y-max": 90.0,
+          "track-id": 7,
+          "class-index": 0,
+          "emit-targets": true
+        }
+      },
+      "max_frames": 3,
+      "timeout_sec": 120
+    },
+    "mock.sat-a.stare.zero.v1": {
+      "evidence_class": "host_mock_filter",
+      "filter_backend": "mock",
+      "output_mode": "product_text",
+      "sensor_id": "sat-a.area-array",
+      "acquisition_mode": "stare",
+      "category_map": "mock-optical-v1",
+      "source": {
+        "factory": "CDG00AreaRepeatSrc",
+        "input_path_property": "location",
+        "properties": {
+          "image-height": 4096,
+          "repeat-count": 3,
+          "fps": 30.0
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "identity.v1",
+          "scale-x": 1.0,
+          "scale-y": 1.0,
+          "offset-x": 0.0,
+          "offset-y": 0.0
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessMockTracker",
+        "role": "tracking",
+        "properties": {
+          "emit-targets": false
+        }
+      },
+      "max_frames": 3,
       "timeout_sec": 120
     }
   }

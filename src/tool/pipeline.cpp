@@ -504,6 +504,26 @@ ProcessedFrame copy_sample(GstSample* sample, std::size_t index) {
 }  // namespace
 
 Json make_pipeline_plan(const Json& profile) {
+    if (profile.value("output_mode", "") == "product_text") {
+        return {{"source",
+                 {{"factory", profile.at("source").at("factory")},
+                  {"role", "sensor_source"},
+                  {"properties", profile.at("source").at("properties")}}},
+                {"geometry",
+                 {{"factory", profile.at("geometry").at("factory")},
+                  {"role", "geometry"},
+                  {"properties", profile.at("geometry").at("properties")}}},
+                {"filter",
+                 {{"factory", profile.at("filter").at("factory")},
+                  {"role", profile.at("filter").at("role")},
+                  {"properties", profile.at("filter").at("properties")}}},
+                {"sink",
+                 {{"factory", "ImageProcessTextSink"},
+                  {"role", "product_text_sink"}}},
+                {"output_mode", "product_text"},
+                {"evidence_class", profile.at("evidence_class")},
+                {"filter_backend", profile.value("filter_backend", "mock")}};
+    }
     if (profile.value("output_mode", "") == "ground_cdg00") {
         Json video_plan = {
             {"convert", profile.at("video").at("convert")},
@@ -563,6 +583,12 @@ void preflight_pipeline(const Json& profile) {
     ensure_gstreamer_initialized();
     require_factory(profile.at("source").at("factory").get<std::string>());
     require_factory(profile.at("filter").at("factory").get<std::string>());
+    if (profile.value("output_mode", "") == "product_text") {
+        require_factory(
+            profile.at("geometry").at("factory").get<std::string>());
+        require_factory("ImageProcessTextSink");
+        return;
+    }
     if (profile.value("output_mode", "") == "ground_cdg00") {
         for (const char* section : {"convert", "scale", "encoder", "muxer"}) {
             require_factory(profile.at("video")
@@ -941,6 +967,213 @@ PipelineResult run_ground_cdg00_pipeline(
         if (!parser_name.empty()) {
             result.provenance["parser"] = factory_provenance(parser_name);
         }
+        result.resource_usage = resource_sampler.finish();
+        cleanup();
+        return result;
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+}
+
+[[noreturn]] void throw_gst_message_error(GstMessage* message,
+                                          const char* prefix) {
+    GError* error = nullptr;
+    gchar*  debug = nullptr;
+    gst_message_parse_error(message, &error, &debug);
+    const std::string detail =
+        error == nullptr ? "unknown pipeline error" : error->message;
+    const GQuark domain = error == nullptr ? 0 : error->domain;
+    if (error != nullptr) { g_error_free(error); }
+    if (debug != nullptr) { g_free(debug); }
+    gst_message_unref(message);
+    if (domain == GST_RESOURCE_ERROR) {
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                std::string(prefix) + detail);
+    }
+    if (domain == GST_STREAM_ERROR) {
+        throw ImageProcessError(satellite::EXIT_FATAL,
+                                std::string(prefix) + detail);
+    }
+    throw ImageProcessError(satellite::EXIT_RETRYABLE,
+                            std::string(prefix) + detail);
+}
+
+struct FrameCountContext {
+    std::mutex         mutex;
+    std::size_t        frame_count = 0;
+    std::size_t        max_frames  = 0;
+    std::exception_ptr error;
+};
+
+GstPadProbeReturn count_product_frames(GstPad*,
+                                       GstPadProbeInfo* info,
+                                       gpointer         user_data) {
+    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0U) {
+        return GST_PAD_PROBE_OK;
+    }
+    auto* context = static_cast<FrameCountContext*>(user_data);
+    std::lock_guard<std::mutex> lock(context->mutex);
+    if (context->error != nullptr) { return GST_PAD_PROBE_DROP; }
+    try {
+        if (context->frame_count >= context->max_frames) {
+            throw ImageProcessError(
+                satellite::EXIT_RETRYABLE,
+                "pipeline exceeded the installed frame limit before EOS");
+        }
+        ++context->frame_count;
+    } catch (...) { context->error = std::current_exception(); }
+    return context->error == nullptr ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
+}
+
+void rethrow_frame_error(FrameCountContext& context) {
+    std::lock_guard<std::mutex> lock(context.mutex);
+    if (context.error != nullptr) { std::rethrow_exception(context.error); }
+}
+
+PipelineResult run_product_text_pipeline(
+    const Json&                  profile,
+    const std::filesystem::path& input_path,
+    std::size_t                  max_frames,
+    const Json&                  sink_properties) {
+    ScopedStdoutToStderr runtime_log_guard;
+    preflight_pipeline(profile);
+
+    const std::string source_name =
+        profile.at("source").at("factory").get<std::string>();
+    const std::string geometry_name =
+        profile.at("geometry").at("factory").get<std::string>();
+    const std::string filter_name =
+        profile.at("filter").at("factory").get<std::string>();
+    const std::string sink_name = "ImageProcessTextSink";
+
+    GstElement* pipeline = gst_pipeline_new("image-process-product-text");
+    GstElement* source =
+        gst_element_factory_make(source_name.c_str(), "source");
+    GstElement* geometry =
+        gst_element_factory_make(geometry_name.c_str(), "geometry");
+    GstElement* filter =
+        gst_element_factory_make(filter_name.c_str(), "filter");
+    GstElement* sink = gst_element_factory_make(sink_name.c_str(), "text-sink");
+    if (pipeline == nullptr || source == nullptr || geometry == nullptr ||
+        filter == nullptr || sink == nullptr) {
+        if (pipeline != nullptr) { gst_object_unref(pipeline); }
+        for (GstElement* element : {source, geometry, filter, sink}) {
+            if (element != nullptr) { gst_object_unref(element); }
+        }
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                "failed to instantiate product text pipeline");
+    }
+
+    gst_bin_add_many(GST_BIN(pipeline), source, geometry, filter, sink,
+                     nullptr);
+    FrameCountContext probe_context;
+    probe_context.max_frames = max_frames;
+    GstPad* probe_pad        = gst_element_get_static_pad(sink, "sink");
+    if (probe_pad == nullptr) {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                "product text sink has no sink pad");
+    }
+    const gulong probe_id =
+        gst_pad_add_probe(probe_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                          count_product_frames, &probe_context, nullptr);
+    gst_object_unref(probe_pad);
+    if (probe_id == 0U) {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        throw ImageProcessError(satellite::EXIT_DEPENDENCY,
+                                "failed to install product text pad probe");
+    }
+
+    auto cleanup = [&pipeline, sink, probe_id] {
+        GstPad* pad = gst_element_get_static_pad(sink, "sink");
+        if (pad != nullptr) {
+            if (probe_id != 0U) { gst_pad_remove_probe(pad, probe_id); }
+            gst_object_unref(pad);
+        }
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        pipeline = nullptr;
+    };
+
+    try {
+        apply_properties(source, profile.at("source").at("properties"));
+        apply_properties(geometry, profile.at("geometry").at("properties"));
+        apply_properties(filter, profile.at("filter").at("properties"));
+        apply_properties(sink, sink_properties);
+        if (profile.at("source").contains("input_path_property")) {
+            if (input_path.empty()) {
+                throw ImageProcessError(satellite::EXIT_VALIDATION,
+                                        "runtime profile requires input.path");
+            }
+            set_property(source,
+                         profile.at("source")
+                             .at("input_path_property")
+                             .get<std::string>(),
+                         input_path.string());
+        }
+        if (!gst_element_link_many(source, geometry, filter, sink, nullptr)) {
+            throw ImageProcessError(
+                satellite::EXIT_DEPENDENCY,
+                "product text elements cannot negotiate a pipeline");
+        }
+        if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
+            GST_STATE_CHANGE_FAILURE) {
+            throw ImageProcessError(
+                satellite::EXIT_RETRYABLE,
+                "product text pipeline failed to enter PLAYING state");
+        }
+
+        ResourceSampler resource_sampler;
+        GstBus*         bus = gst_element_get_bus(pipeline);
+        const auto      deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::seconds(profile.at("timeout_sec").get<unsigned int>());
+        bool done = false;
+        while (!done) {
+            GstMessage* message = gst_bus_timed_pop_filtered(
+                bus, 100 * GST_MSECOND,
+                static_cast<GstMessageType>(GST_MESSAGE_ERROR |
+                                            GST_MESSAGE_EOS));
+            rethrow_frame_error(probe_context);
+            if (message != nullptr) {
+                if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+                    gst_object_unref(bus);
+                    throw_gst_message_error(
+                        message, "GStreamer product text pipeline error: ");
+                }
+                done = true;
+                gst_message_unref(message);
+            }
+            resource_sampler.sample();
+            if (std::chrono::steady_clock::now() >= deadline) {
+                gst_object_unref(bus);
+                throw ImageProcessError(
+                    satellite::EXIT_RETRYABLE,
+                    "GStreamer product text pipeline timed out");
+            }
+        }
+        gst_object_unref(bus);
+        rethrow_frame_error(probe_context);
+
+        PipelineResult result;
+        {
+            std::lock_guard<std::mutex> lock(probe_context.mutex);
+            result.frame_count = probe_context.frame_count;
+        }
+        result.provenance = {
+            {"gstreamer_version", gst_version_string()},
+            {"runtime", runtime_contract_provenance()},
+            {"source", factory_provenance(source_name)},
+            {"geometry", factory_provenance(geometry_name)},
+            {"filter", factory_provenance(filter_name)},
+            {"sink", factory_provenance(sink_name)},
+            {"filter_role", profile.at("filter").at("role")},
+            {"filter_backend", profile.value("filter_backend", "mock")},
+            {"filter_factory", filter_name},
+            {"evidence_class", profile.at("evidence_class")}};
         result.resource_usage = resource_sampler.finish();
         cleanup();
         return result;

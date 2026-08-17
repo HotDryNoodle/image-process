@@ -70,4 +70,18 @@ PipelineResult run_ground_cdg00_pipeline(
     std::size_t                  max_frames,
     const MetadataConsumer&      metadata_consumer);
 
+/**
+ * @brief Run the IP2-M4 source→geometry→mock filter→text sink pipeline.
+ * @param profile Trusted product_text registry entry.
+ * @param input_path Existing CDG0.0 input file.
+ * @param max_frames Maximum processed frames before fail-closed.
+ * @param sink_properties CLI-injected TextSink properties (work-dir, maps).
+ * @return Frame count, provenance, and resource usage.
+ */
+PipelineResult run_product_text_pipeline(
+    const Json&                  profile,
+    const std::filesystem::path& input_path,
+    std::size_t                  max_frames,
+    const Json&                  sink_properties);
+
 }  // namespace image_process

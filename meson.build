@@ -11,6 +11,7 @@ project('image-process', 'cpp',
 fs = import('fs')
 
 nlohmann_json_sp = subproject('nlohmann_json')
+nlohmann_json_dep = nlohmann_json_sp.get_variable('nlohmann_json_dep')
 sdk_sp = subproject('satellite-plugin-sdk')
 satellite_common_dep = sdk_sp.get_variable('satellite_common_dep')
 
@@ -76,11 +77,17 @@ runtime_manifest_data.set(
 )
 runtime_manifest_data.set(
   'SOURCE_FACTORIES',
-  opencv_dep.found() ? '"CDG00Src", "ImgScanSrc"' : '"CDG00Src"',
+  opencv_dep.found()
+    ? '"CDG00Src", "CDG00AreaRepeatSrc", "ImgScanSrc"'
+    : '"CDG00Src", "CDG00AreaRepeatSrc"',
 )
 runtime_manifest_data.set(
   'OPENCV_DEVELOPMENT_SOURCES',
   opencv_dep.found() ? 'true' : 'false',
+)
+runtime_manifest_data.set(
+  'PRODUCT_PLUGIN_ENTRY',
+  ',\n    {\n      "plugin": "ipm4",\n      "factories": ["ImageProcessGeometryNormalize", "ImageProcessMockDetector", "ImageProcessMockTracker", "ImageProcessTextSink"]\n    }',
 )
 runtime_manifest_data.set(
   'FILTER_PLUGIN_ENTRY',
@@ -92,6 +99,7 @@ runtime_manifest_data.set(
   'DEVELOPMENT_FILTERS',
   development_filters_option.disabled() ? 'false' : 'true',
 )
+runtime_manifest_data.set('MOCK_FILTERS', 'true')
 runtime_manifest = configure_file(
   input: 'configs/runtime/runtime-manifest.json.in',
   output: 'image-process-runtime-manifest.json',
@@ -101,6 +109,7 @@ runtime_manifest = configure_file(
 if internal_runtime_option.enabled() or internal_runtime_option.auto()
   source_plugin_sources = files(
     'src/gst/sources/cdg00_src.cpp',
+    'src/gst/sources/cdg00_area_repeat_src.cpp',
     'src/gst/sources/plugin_init.cpp',
   )
   source_plugin_cpp_args = runtime_cpp_args + ['-DIP_HAVE_OPENCV=0']
@@ -114,8 +123,30 @@ if internal_runtime_option.enabled() or internal_runtime_option.auto()
   shared_module(
     'gstmsfsrc',
     source_plugin_sources,
+    include_directories: include_directories('src/gst/sources'),
     dependencies: source_plugin_dependencies,
     cpp_args: source_plugin_cpp_args,
+    install: true,
+    install_dir: runtime_install_dir,
+  )
+
+  shared_module(
+    'gstipm4',
+    files(
+      'src/gst/filters/geometry_normalize.cpp',
+      'src/gst/filters/mock_detector.cpp',
+      'src/gst/filters/mock_tracker.cpp',
+      'src/gst/sinks/text_sink.cpp',
+      'src/gst/sinks/plugin_init.cpp',
+    ),
+    dependencies: [
+      gstreamer_dep,
+      gstreamer_base_dep,
+      gstreamer_video_dep,
+      gst_meta_dep,
+      nlohmann_json_dep,
+    ],
+    cpp_args: runtime_cpp_args,
     install: true,
     install_dir: runtime_install_dir,
   )
@@ -179,6 +210,11 @@ install_data(
 )
 
 install_data(
+  'configs/runtime/category-maps/mock-optical-v1.json',
+  install_dir: get_option('datadir') / 'image-process/runtime/category-maps',
+)
+
+install_data(
   runtime_manifest,
   rename: 'runtime-manifest.json',
   install_dir: get_option('datadir') / 'image-process/runtime',
@@ -208,6 +244,8 @@ install_data(
   'samples/pushbroom_fixture.json',
   'samples/stare_cdg00.json',
   'samples/cdg00_parse_host.json',
+  'samples/m4_sat_c_pushbroom.json',
+  'samples/m4_sat_a_stare.json',
   install_dir: get_option('datadir') / 'image-process/samples',
 )
 
@@ -215,8 +253,22 @@ test(
   'image-process-contract',
   find_program('scripts/contract-test.sh'),
   args: [image_process_exe],
-  env: ['IMAGE_PROCESS_SOURCE_ROOT=' + meson.current_source_dir()],
+  env: [
+    'IMAGE_PROCESS_SOURCE_ROOT=' + meson.current_source_dir(),
+    'IMAGE_PROCESS_GST_PLUGIN_PATH=' + meson.current_build_dir(),
+  ],
   timeout: 60,
+)
+
+test(
+  'image-process-m4-contract',
+  find_program('scripts/contract-test-m4.sh'),
+  args: [image_process_exe],
+  env: [
+    'IMAGE_PROCESS_SOURCE_ROOT=' + meson.current_source_dir(),
+    'IMAGE_PROCESS_GST_PLUGIN_PATH=' + meson.current_build_dir(),
+  ],
+  timeout: 180,
 )
 
 gst_meta_v1_test = executable(

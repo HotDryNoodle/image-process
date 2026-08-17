@@ -1,12 +1,6 @@
-/*
- * Portions refactored from MSF Project source at revision c4046d66.
- * Copyright (C) 2025 MSF Project.
- * See SOURCE_PROVENANCE.json and NOTICE for origin and license details.
- */
 #include <gst/base/gstpushsrc.h>
 #include <gst/gst.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -18,56 +12,55 @@
 
 namespace {
 
+using image_process::cdg00::area_frame_from_sample;
 using image_process::cdg00::decode_window;
 using image_process::cdg00::DecodedWindow;
 using image_process::cdg00::kImageWidth;
 using image_process::cdg00::kLineSize;
 
-struct Cdg00SourceState {
-    std::string   location;
-    std::ifstream stream;
-    std::uint64_t file_size    = 0;
-    std::uint64_t offset       = 0;
-    std::uint64_t frame_number = 0;
-    int           channel      = 0;
-    int           image_height = 4096;
-    int           stride_lines = 32;
-    double        fps          = 30.0;
+struct AreaRepeatState {
+    std::string               location;
+    std::vector<std::uint8_t> pixels;
+    IpAreaFrameMetaV1         area_frame{};
+    std::uint64_t             frame_number = 0;
+    int                       image_height = 4096;
+    int                       repeat_count = 3;
+    double                    fps          = 30.0;
 };
 
 GQuark state_quark() {
-    return g_quark_from_static_string("image-process-cdg00-source-state");
+    return g_quark_from_static_string(
+        "image-process-cdg00-area-repeat-source-state");
 }
 
 }  // namespace
 
-typedef struct _IpCdg00Src {
+typedef struct _IpCdg00AreaRepeatSrc {
     GstPushSrc parent;
-} IpCdg00Src;
+} IpCdg00AreaRepeatSrc;
 
-typedef struct _IpCdg00SrcClass {
+typedef struct _IpCdg00AreaRepeatSrcClass {
     GstPushSrcClass parent_class;
-} IpCdg00SrcClass;
+} IpCdg00AreaRepeatSrcClass;
 
-G_DEFINE_TYPE(IpCdg00Src, ip_cdg00_src, GST_TYPE_PUSH_SRC)
+G_DEFINE_TYPE(IpCdg00AreaRepeatSrc, ip_cdg00_area_repeat_src, GST_TYPE_PUSH_SRC)
 
 namespace {
 
 enum PropertyId {
     kPropertyNone,
     kPropertyLocation,
-    kPropertyChannel,
     kPropertyImageHeight,
-    kPropertyStrideLines,
+    kPropertyRepeatCount,
     kPropertyFps,
 };
 
-Cdg00SourceState* state(IpCdg00Src* source) {
-    return static_cast<Cdg00SourceState*>(
+AreaRepeatState* state(IpCdg00AreaRepeatSrc* source) {
+    return static_cast<AreaRepeatState*>(
         g_object_get_qdata(G_OBJECT(source), state_quark()));
 }
 
-GstCaps* make_caps(const Cdg00SourceState& value_state) {
+GstCaps* make_caps(const AreaRepeatState& value_state) {
     gint fps_numerator   = 0;
     gint fps_denominator = 1;
     gst_util_double_to_fraction(value_state.fps, &fps_numerator,
@@ -81,8 +74,9 @@ GstCaps* make_caps(const Cdg00SourceState& value_state) {
 }
 
 GstCaps* get_caps(GstBaseSrc* base_source, GstCaps* filter) {
-    const auto* value_state = state(reinterpret_cast<IpCdg00Src*>(base_source));
-    GstCaps*    caps        = make_caps(*value_state);
+    const auto* value_state =
+        state(reinterpret_cast<IpCdg00AreaRepeatSrc*>(base_source));
+    GstCaps* caps = make_caps(*value_state);
     if (filter == nullptr) { return caps; }
     GstCaps* intersection =
         gst_caps_intersect_full(filter, caps, GST_CAPS_INTERSECT_FIRST);
@@ -94,22 +88,18 @@ void set_property(GObject*      object,
                   guint         property_id,
                   const GValue* value,
                   GParamSpec*   spec) {
-    auto* source      = reinterpret_cast<IpCdg00Src*>(object);
-    auto* value_state = state(source);
+    auto* value_state = state(reinterpret_cast<IpCdg00AreaRepeatSrc*>(object));
     switch (property_id) {
         case kPropertyLocation:
             value_state->location = g_value_get_string(value) == nullptr
                                         ? ""
                                         : g_value_get_string(value);
             break;
-        case kPropertyChannel:
-            value_state->channel = g_value_get_int(value);
-            break;
         case kPropertyImageHeight:
             value_state->image_height = g_value_get_int(value);
             break;
-        case kPropertyStrideLines:
-            value_state->stride_lines = g_value_get_int(value);
+        case kPropertyRepeatCount:
+            value_state->repeat_count = g_value_get_int(value);
             break;
         case kPropertyFps:
             value_state->fps = g_value_get_double(value);
@@ -123,19 +113,16 @@ void get_property(GObject*    object,
                   guint       property_id,
                   GValue*     value,
                   GParamSpec* spec) {
-    auto* value_state = state(reinterpret_cast<IpCdg00Src*>(object));
+    auto* value_state = state(reinterpret_cast<IpCdg00AreaRepeatSrc*>(object));
     switch (property_id) {
         case kPropertyLocation:
             g_value_set_string(value, value_state->location.c_str());
             break;
-        case kPropertyChannel:
-            g_value_set_int(value, value_state->channel);
-            break;
         case kPropertyImageHeight:
             g_value_set_int(value, value_state->image_height);
             break;
-        case kPropertyStrideLines:
-            g_value_set_int(value, value_state->stride_lines);
+        case kPropertyRepeatCount:
+            g_value_set_int(value, value_state->repeat_count);
             break;
         case kPropertyFps:
             g_value_set_double(value, value_state->fps);
@@ -146,37 +133,52 @@ void get_property(GObject*    object,
 }
 
 gboolean start(GstBaseSrc* base_source) {
-    auto* source      = reinterpret_cast<IpCdg00Src*>(base_source);
+    auto* source      = reinterpret_cast<IpCdg00AreaRepeatSrc*>(base_source);
     auto* value_state = state(source);
-    if (value_state->channel != 0) {
-        GST_ELEMENT_ERROR(source, RESOURCE, SETTINGS,
-                          ("CDG00Src currently supports only channel P"),
-                          ("channel=%d", value_state->channel));
-        return FALSE;
-    }
+    value_state->pixels.clear();
+    value_state->frame_number = 0;
     if (value_state->location.empty()) {
         GST_ELEMENT_ERROR(source, RESOURCE, NOT_FOUND,
-                          ("CDG00Src location is empty"), (nullptr));
+                          ("CDG00AreaRepeatSrc location is empty"), (nullptr));
         return FALSE;
     }
-    value_state->stream.open(value_state->location, std::ios::binary);
-    if (!value_state->stream) {
+    if (value_state->repeat_count < 1) {
+        GST_ELEMENT_ERROR(source, RESOURCE, SETTINGS,
+                          ("CDG00AreaRepeatSrc repeat-count must be >= 1"),
+                          ("repeat-count=%d", value_state->repeat_count));
+        return FALSE;
+    }
+
+    std::ifstream stream(value_state->location, std::ios::binary);
+    if (!stream) {
         GST_ELEMENT_ERROR(source, RESOURCE, OPEN_READ,
                           ("cannot open CDG0.0 input"),
                           ("location=%s", value_state->location.c_str()));
         return FALSE;
     }
-    value_state->stream.seekg(0, std::ios::end);
-    const std::streamoff end = value_state->stream.tellg();
-    if (end < 0) {
-        GST_ELEMENT_ERROR(source, RESOURCE, READ,
-                          ("cannot determine CDG0.0 input size"), (nullptr));
+    const std::size_t block_size =
+        kLineSize * static_cast<std::size_t>(value_state->image_height);
+    std::vector<std::uint8_t> raw(block_size);
+    stream.read(reinterpret_cast<char*>(raw.data()),
+                static_cast<std::streamsize>(raw.size()));
+    const std::size_t bytes_read = static_cast<std::size_t>(stream.gcount());
+    if (bytes_read < kLineSize) {
+        GST_ELEMENT_ERROR(source, STREAM, DECODE,
+                          ("CDG0.0 input is shorter than one line"), (nullptr));
         return FALSE;
     }
-    value_state->file_size    = static_cast<std::uint64_t>(end);
-    value_state->offset       = 0;
-    value_state->frame_number = 0;
-    value_state->stream.clear();
+    raw.resize(bytes_read);
+
+    DecodedWindow decoded;
+    if (!decode_window(raw, value_state->image_height, decoded)) {
+        GST_ELEMENT_ERROR(source, STREAM, DECODE,
+                          ("CDG0.0 first window contains no valid image lines"),
+                          (nullptr));
+        return FALSE;
+    }
+    value_state->pixels = std::move(decoded.pixels);
+    value_state->area_frame =
+        area_frame_from_sample(decoded.metadata.window_start);
 
     GstCaps*       caps     = make_caps(*value_state);
     const gboolean accepted = gst_base_src_set_caps(base_source, caps);
@@ -185,56 +187,37 @@ gboolean start(GstBaseSrc* base_source) {
 }
 
 gboolean stop(GstBaseSrc* base_source) {
-    auto* value_state = state(reinterpret_cast<IpCdg00Src*>(base_source));
-    if (value_state->stream.is_open()) { value_state->stream.close(); }
-    value_state->file_size    = 0;
-    value_state->offset       = 0;
+    auto* value_state =
+        state(reinterpret_cast<IpCdg00AreaRepeatSrc*>(base_source));
+    value_state->pixels.clear();
     value_state->frame_number = 0;
     return TRUE;
 }
 
 GstFlowReturn create(GstPushSrc* push_source, GstBuffer** output_buffer) {
-    auto* source      = reinterpret_cast<IpCdg00Src*>(push_source);
+    auto* source      = reinterpret_cast<IpCdg00AreaRepeatSrc*>(push_source);
     auto* value_state = state(source);
-    if (value_state->offset >= value_state->file_size) { return GST_FLOW_EOS; }
-
-    const std::size_t block_size =
-        kLineSize * static_cast<std::size_t>(value_state->image_height);
-    const std::size_t available =
-        static_cast<std::size_t>(std::min<std::uint64_t>(
-            block_size, value_state->file_size - value_state->offset));
-    if (available < kLineSize) { return GST_FLOW_EOS; }
-
-    std::vector<std::uint8_t> raw(available);
-    value_state->stream.clear();
-    value_state->stream.seekg(static_cast<std::streamoff>(value_state->offset),
-                              std::ios::beg);
-    value_state->stream.read(reinterpret_cast<char*>(raw.data()),
-                             static_cast<std::streamsize>(raw.size()));
-    const std::size_t bytes_read =
-        static_cast<std::size_t>(value_state->stream.gcount());
-    if (bytes_read < kLineSize) { return GST_FLOW_EOS; }
-    raw.resize(bytes_read);
-    value_state->offset +=
-        kLineSize * static_cast<std::uint64_t>(value_state->stride_lines);
-
-    DecodedWindow decoded;
-    if (!decode_window(raw, value_state->image_height, decoded)) {
-        GST_ELEMENT_ERROR(source, STREAM, DECODE,
-                          ("CDG0.0 block contains no valid image lines"),
-                          ("offset=%" G_GUINT64_FORMAT, value_state->offset));
+    if (value_state->frame_number >=
+        static_cast<std::uint64_t>(value_state->repeat_count)) {
+        return GST_FLOW_EOS;
+    }
+    if (value_state->pixels.empty()) {
+        GST_ELEMENT_ERROR(source, STREAM, FAILED,
+                          ("CDG00AreaRepeatSrc has no decoded window"),
+                          (nullptr));
         return GST_FLOW_ERROR;
     }
 
     GstBuffer* buffer =
-        gst_buffer_new_allocate(nullptr, decoded.pixels.size(), nullptr);
+        gst_buffer_new_allocate(nullptr, value_state->pixels.size(), nullptr);
     if (buffer == nullptr) { return GST_FLOW_ERROR; }
     GstMapInfo map{};
     if (!gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
         gst_buffer_unref(buffer);
         return GST_FLOW_ERROR;
     }
-    std::memcpy(map.data, decoded.pixels.data(), decoded.pixels.size());
+    std::memcpy(map.data, value_state->pixels.data(),
+                value_state->pixels.size());
     gst_buffer_unmap(buffer, &map);
 
     const GstClockTime duration = static_cast<GstClockTime>(
@@ -243,10 +226,10 @@ GstFlowReturn create(GstPushSrc* push_source, GstBuffer** output_buffer) {
     GST_BUFFER_OFFSET(buffer)     = value_state->frame_number;
     GST_BUFFER_OFFSET_END(buffer) = value_state->frame_number + 1U;
     ++value_state->frame_number;
-    if (!ip_buffer_add_cdg00_meta(buffer, &decoded.metadata)) {
+    if (!ip_buffer_add_area_frame_meta(buffer, &value_state->area_frame)) {
         gst_buffer_unref(buffer);
         GST_ELEMENT_ERROR(source, STREAM, FAILED,
-                          ("failed to attach CDG0.0 metadata"), (nullptr));
+                          ("failed to attach AreaFrame metadata"), (nullptr));
         return GST_FLOW_ERROR;
     }
     *output_buffer = buffer;
@@ -255,7 +238,8 @@ GstFlowReturn create(GstPushSrc* push_source, GstBuffer** output_buffer) {
 
 }  // namespace
 
-static void ip_cdg00_src_class_init(IpCdg00SrcClass* source_class) {
+static void ip_cdg00_area_repeat_src_class_init(
+    IpCdg00AreaRepeatSrcClass* source_class) {
     auto* object_class      = G_OBJECT_CLASS(source_class);
     auto* element_class     = GST_ELEMENT_CLASS(source_class);
     auto* base_source_class = GST_BASE_SRC_CLASS(source_class);
@@ -269,21 +253,16 @@ static void ip_cdg00_src_class_init(IpCdg00SrcClass* source_class) {
                             static_cast<GParamFlags>(G_PARAM_READWRITE |
                                                      G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
-        object_class, kPropertyChannel,
-        g_param_spec_int("channel", "Channel", "0=P, 1=B1, 2=B2, 3=B3, 4=B4", 0,
-                         4, 0,
-                         static_cast<GParamFlags>(G_PARAM_READWRITE |
-                                                  G_PARAM_STATIC_STRINGS)));
-    g_object_class_install_property(
         object_class, kPropertyImageHeight,
         g_param_spec_int("image-height", "Image height", "Output image height",
                          1, 16384, 4096,
                          static_cast<GParamFlags>(G_PARAM_READWRITE |
                                                   G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
-        object_class, kPropertyStrideLines,
-        g_param_spec_int("stride-lines", "Stride lines",
-                         "Input lines advanced per output frame", 1, 16384, 32,
+        object_class, kPropertyRepeatCount,
+        g_param_spec_int("repeat-count", "Repeat count",
+                         "Number of identical area-array frames to emit", 1,
+                         4096, 3,
                          static_cast<GParamFlags>(G_PARAM_READWRITE |
                                                   G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
@@ -294,8 +273,9 @@ static void ip_cdg00_src_class_init(IpCdg00SrcClass* source_class) {
                                                      G_PARAM_STATIC_STRINGS)));
 
     gst_element_class_set_static_metadata(
-        element_class, "Image Process CDG0.0 Source", "Source/Video/File",
-        "Reads bounded CDG0.0 windows with a versioned metadata ABI",
+        element_class, "Image Process CDG0.0 Area Repeat Source",
+        "Source/Video/File",
+        "Repeats the first CDG0.0 window as identical area-array frames",
         "image-process maintainers");
     static GstStaticPadTemplate source_template = GST_STATIC_PAD_TEMPLATE(
         "src", GST_PAD_SRC, GST_PAD_ALWAYS,
@@ -310,9 +290,9 @@ static void ip_cdg00_src_class_init(IpCdg00SrcClass* source_class) {
     push_source_class->create   = create;
 }
 
-static void ip_cdg00_src_init(IpCdg00Src* source) {
+static void ip_cdg00_area_repeat_src_init(IpCdg00AreaRepeatSrc* source) {
     g_object_set_qdata_full(
-        G_OBJECT(source), state_quark(), new Cdg00SourceState(),
-        [](gpointer data) { delete static_cast<Cdg00SourceState*>(data); });
+        G_OBJECT(source), state_quark(), new AreaRepeatState(),
+        [](gpointer data) { delete static_cast<AreaRepeatState*>(data); });
     gst_base_src_set_format(GST_BASE_SRC(source), GST_FORMAT_TIME);
 }
