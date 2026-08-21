@@ -1,0 +1,10 @@
+Bounded import of MSF `subprojects/lynxi` C++ wrapper and YOLO post-process.
+
+- Origin tree: /home/hotdry/projects/hot/msf/subprojects/lynxi
+- Paths: src/include/** and src/infer/**
+- License: Lynxi Technologies Co., Ltd. proprietary (see per-file headers)
+- Treatment: copy, not whole-MSF vendor
+- Not imported: MSF AlgorithmFactory, Gst element macros, DeepSort, MPS
+
+First-party adapter: yolox_runtime.{hpp,cpp}
+First-party Gst element: src/gst/filters/lynxi_detector.cpp

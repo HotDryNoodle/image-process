@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "request_id": "npu-hawaii-pushbroom-001",
+  "trace_id": "trace-npu-hawaii-001",
+  "acquisition_mode": "pushbroom",
+  "sensor": {"id": "sat-c.line-array"},
+  "input": {
+    "artifact_ref": "artifact://raw/cdg00/Hawaii_A2",
+    "path": "data/Hawaii_A2.dat",
+    "media_type": "application/x-cdg00",
+    "size_bytes": 211288064,
+    "sha256": "4a43a7e6bb980b78e5deeab0c9177a14caf0e46e0e624b61cb3c9f7d533296b0"
+  },
+  "processing": {"runtime_profile": "npu.sat-c.pushbroom.v1"}
+}

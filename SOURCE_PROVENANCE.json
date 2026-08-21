@@ -126,6 +126,54 @@
       "treatment": "independent_rewrite",
       "bundle_eligible": true,
       "notes": "Replaces private native layout interpretation with fixed-width version and struct-size checks."
+    },
+    {
+      "target_path": "src/backends/lynxi/include",
+      "origin_paths": ["subprojects/lynxi/src/include"],
+      "origin_revision": "local-msf-copy",
+      "import_commit": null,
+      "license": "Proprietary",
+      "license_evidence": "Lynxi Technologies Co., Ltd. per-file copyright on lynsdk.hpp and sdk/*.hpp",
+      "owner": "image-process/src/backends/lynxi",
+      "treatment": "copy",
+      "bundle_eligible": false,
+      "notes": "Copied from local MSF subprojects/lynxi C++ wrapper. Requires installed lynxi-sdk-devel headers/libs at build time."
+    },
+    {
+      "target_path": "src/backends/lynxi/infer",
+      "origin_paths": ["subprojects/lynxi/src/infer"],
+      "origin_revision": "local-msf-copy",
+      "import_commit": null,
+      "license": "Proprietary",
+      "license_evidence": "Lynxi Technologies Co., Ltd. per-file copyright on detect.h/yolovXPostProcess.*",
+      "owner": "image-process/src/backends/lynxi",
+      "treatment": "copy",
+      "bundle_eligible": false,
+      "notes": "YOLO post-process and Environment/SMI helpers copied with the C++ wrapper."
+    },
+    {
+      "target_path": "src/backends/lynxi/yolox_runtime.cpp",
+      "origin_paths": ["source/filter/yolox_lynxi_processor.cpp"],
+      "origin_revision": "local-msf-copy",
+      "import_commit": null,
+      "license": "MSF/Lynxi mixed",
+      "license_evidence": "MSF processor file header plus Lynxi infer types; rewritten without AlgorithmFactory",
+      "owner": "image-process/src/backends/lynxi",
+      "treatment": "refactored",
+      "bundle_eligible": false,
+      "notes": "Single-chip tile/pre/infer/post runtime. Dual-chip is out of scope."
+    },
+    {
+      "target_path": "src/gst/filters/lynxi_detector.cpp",
+      "origin_paths": ["source/filter/yolox_lynxi_processor.cpp"],
+      "origin_revision": "local-msf-copy",
+      "import_commit": null,
+      "license": "MIT",
+      "license_evidence": "new image-process GstBaseTransform; attaches image-process.gst-meta.v1 detection meta",
+      "owner": "image-process/src/gst/filters",
+      "treatment": "independent_rewrite",
+      "bundle_eligible": false,
+      "notes": "Factory ImageProcessLynxiDetector. Not part of the mock gstipm4 plugin."
     }
   ],
   "excluded": [

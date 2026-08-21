@@ -508,9 +508,10 @@ ValidationResult validate_request(const Json& request) {
     const std::string role        = profile.at("filter").value("role", "");
     const std::string output_mode = profile.value("output_mode", "frames");
     if (output_mode == "product_text") {
-        if (profile.value("filter_backend", "") != "mock") {
+        if (profile.value("filter_backend", "") != "mock" &&
+            profile.value("filter_backend", "") != "lynxi") {
             result.message =
-                "product_text profiles require filter_backend=mock";
+                "product_text profiles require filter_backend=mock|lynxi";
             return result;
         }
         if (!profile.contains("geometry") ||
@@ -664,7 +665,10 @@ Json run(const Json&                  request,
                                                                    : "tracks"},
             {"sensor-id", request.at("sensor").at("id")},
             {"acquisition-mode", request.at("acquisition_mode")},
-            {"category-map-path", map_path.string()}};
+            {"category-map-path", map_path.string()},
+            {"crop-dir", profile.value("crop_tiff", false)
+                             ? (work_dir / "crops").string()
+                             : ""}};
         pipeline_result = run_product_text_pipeline(
             profile, input_path, max_frames, sink_properties);
         pipeline_result.provenance["source_camera_meta"] =

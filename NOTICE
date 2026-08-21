@@ -8,3 +8,9 @@ decisions and explicit exclusions are recorded in SOURCE_PROVENANCE.json.
 The metadata ABI and ImageFilterTest compatibility element are new
 image-process implementations. No GPL-marked DeepSort/Munkres/matrix source or
 LGPL-marked MSF generic meta/property implementation is included.
+
+The optional Lynxi YOLO detector copies the MSF `subprojects/lynxi` C++ wrapper
+and infer post-process (Lynxi Technologies Co., Ltd. proprietary headers) into
+`src/backends/lynxi/`. It is built only when `-Dlynxi=enabled` and a userspace
+SDK prefix is present. Model blobs under `data/lynxi_models/` are not part of
+the source bundle.

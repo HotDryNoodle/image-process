@@ -7,12 +7,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "image_process/gst_meta_v1.h"
 
@@ -31,6 +34,7 @@ struct TextSinkState {
     std::string           sensor_id;
     std::string           acquisition_mode;
     std::string           category_map_path;
+    std::string           crop_dir;
     CategoryMap           category_map;
     std::filesystem::path role_partial;
     std::filesystem::path role_final;
@@ -134,6 +138,123 @@ void remove_path(const std::filesystem::path& path) {
     std::filesystem::remove(path, ignored);
 }
 
+bool write_gray8_tiff(const std::filesystem::path& path,
+                      const std::uint8_t*          src,
+                      int                          width,
+                      int                          height,
+                      int                          src_stride) {
+    if (width <= 0 || height <= 0 || src == nullptr) { return false; }
+    const std::uint32_t image_bytes =
+        static_cast<std::uint32_t>(width) * static_cast<std::uint32_t>(height);
+    constexpr std::uint16_t kEntryCount = 9;
+    const std::uint32_t     header_size = 8U;
+    const std::uint32_t     ifd_size =
+        2U + static_cast<std::uint32_t>(kEntryCount) * 12U + 4U;
+    const std::uint32_t       strip_offset = header_size + ifd_size;
+    std::vector<std::uint8_t> file(strip_offset + image_bytes, 0);
+    file[0]          = 'I';
+    file[1]          = 'I';
+    file[2]          = 42;
+    file[3]          = 0;
+    const auto put16 = [&](std::size_t offset, std::uint16_t value) {
+        file[offset]     = static_cast<std::uint8_t>(value & 0xFFU);
+        file[offset + 1] = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    };
+    const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+        put16(offset, static_cast<std::uint16_t>(value & 0xFFFFU));
+        put16(offset + 2, static_cast<std::uint16_t>((value >> 16U) & 0xFFFFU));
+    };
+    put32(4, header_size);
+    put16(header_size, kEntryCount);
+    std::size_t cursor      = header_size + 2U;
+    const auto  write_entry = [&](std::uint16_t tag, std::uint16_t type,
+                                 std::uint32_t count, std::uint32_t value) {
+        put16(cursor, tag);
+        put16(cursor + 2, type);
+        put32(cursor + 4, count);
+        put32(cursor + 8, value);
+        cursor += 12U;
+    };
+    write_entry(256, 3, 1, static_cast<std::uint32_t>(width));
+    write_entry(257, 3, 1, static_cast<std::uint32_t>(height));
+    write_entry(258, 3, 1, 8);
+    write_entry(259, 3, 1, 1);
+    write_entry(262, 3, 1, 1);
+    write_entry(273, 4, 1, strip_offset);
+    write_entry(277, 3, 1, 1);
+    write_entry(278, 3, 1, static_cast<std::uint32_t>(height));
+    write_entry(279, 4, 1, image_bytes);
+    put32(cursor, 0);
+    for (int row = 0; row < height; ++row) {
+        std::memcpy(
+            file.data() + strip_offset +
+                static_cast<std::size_t>(row) * static_cast<std::size_t>(width),
+            src + static_cast<std::size_t>(row) *
+                      static_cast<std::size_t>(src_stride),
+            static_cast<std::size_t>(width));
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(file.data()),
+              static_cast<std::streamsize>(file.size()));
+    return static_cast<bool>(out);
+}
+
+std::string sanitize_class_dir(const std::string& type) {
+    std::string out;
+    out.reserve(type.size());
+    for (const char ch : type) {
+        const bool ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                        (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                        ch == '-';
+        out.push_back(ok ? ch : '_');
+    }
+    return out.empty() ? "unknown" : out;
+}
+
+struct MappedVideoFrame {
+    GstVideoFrame frame{};
+    bool          mapped = false;
+    ~MappedVideoFrame() {
+        if (mapped) { gst_video_frame_unmap(&frame); }
+    }
+};
+
+bool write_crop_tiff(TextSinkState*       value_state,
+                     const GstVideoFrame& frame,
+                     const IpBBoxV1&      bbox,
+                     const std::string&   class_type,
+                     std::uint32_t        frame_id,
+                     std::uint32_t        target_index,
+                     std::string&         error) {
+    const int width  = GST_VIDEO_FRAME_WIDTH(&frame);
+    const int height = GST_VIDEO_FRAME_HEIGHT(&frame);
+    const int stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+    const int x0     = std::max(0, static_cast<int>(std::floor(bbox.x_min)));
+    const int y0     = std::max(0, static_cast<int>(std::floor(bbox.y_min)));
+    const int x1     = std::min(width, static_cast<int>(std::ceil(bbox.x_max)));
+    const int y1 = std::min(height, static_cast<int>(std::ceil(bbox.y_max)));
+    if (x1 <= x0 || y1 <= y0) { return true; }
+    const std::filesystem::path dir =
+        std::filesystem::path(value_state->crop_dir) /
+        sanitize_class_dir(class_type);
+    std::error_code fs_error;
+    std::filesystem::create_directories(dir, fs_error);
+    if (fs_error) {
+        error = "cannot create crop directory";
+        return false;
+    }
+    char name[64];
+    std::snprintf(name, sizeof(name), "f%06u_d%u.tif", frame_id, target_index);
+    const auto* plane =
+        static_cast<const std::uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
+    if (!write_gray8_tiff(dir / name, plane + y0 * stride + x0, x1 - x0,
+                          y1 - y0, stride)) {
+        error = "failed to write crop TIFF";
+        return false;
+    }
+    return true;
+}
+
 bool fsync_and_rename(const std::filesystem::path& partial,
                       const std::filesystem::path& final_path) {
     const int fd = ::open(partial.c_str(), O_RDONLY);
@@ -167,6 +288,7 @@ enum PropertyId {
     kPropertySensorId,
     kPropertyAcquisitionMode,
     kPropertyCategoryMapPath,
+    kPropertyCropDir,
 };
 
 TextSinkState* state(IpTextSink* sink) {
@@ -217,6 +339,11 @@ void set_property(GObject*      object,
                     ? ""
                     : g_value_get_string(value);
             break;
+        case kPropertyCropDir:
+            value_state->crop_dir = g_value_get_string(value) == nullptr
+                                        ? ""
+                                        : g_value_get_string(value);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
     }
@@ -242,6 +369,9 @@ void get_property(GObject*    object,
             break;
         case kPropertyCategoryMapPath:
             g_value_set_string(value, value_state->category_map_path.c_str());
+            break;
+        case kPropertyCropDir:
+            g_value_set_string(value, value_state->crop_dir.c_str());
             break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
@@ -289,6 +419,14 @@ gboolean start(GstBaseSink* base_sink) {
         GST_ELEMENT_ERROR(sink, RESOURCE, OPEN_WRITE,
                           ("cannot create product text partials"), (nullptr));
         return FALSE;
+    }
+    if (!value_state->crop_dir.empty()) {
+        std::filesystem::create_directories(value_state->crop_dir, fs_error);
+        if (fs_error) {
+            GST_ELEMENT_ERROR(sink, RESOURCE, OPEN_WRITE,
+                              ("cannot create crop directory"), (nullptr));
+            return FALSE;
+        }
     }
     value_state->started = true;
     return TRUE;
@@ -443,7 +581,16 @@ GstFlowReturn render(GstBaseSink* base_sink, GstBuffer* buffer) {
     Json               exposure = {{"value", exposure_time_ns}, {"unit", "ns"}};
     Json               items    = Json::array();
     std::set<uint64_t> seen_tracks;
-    const uint32_t     count =
+    MappedVideoFrame   mapped_frame;
+    if (!value_state->crop_dir.empty()) {
+        if (!gst_video_frame_map(&mapped_frame.frame, &info, buffer,
+                                 GST_MAP_READ)) {
+            fail_closed(sink, false, "TextSink cannot map frame for crops");
+            return GST_FLOW_ERROR;
+        }
+        mapped_frame.mapped = true;
+    }
+    const uint32_t count =
         targets_mode ? detection.target_count : tracking.tracked_target_count;
     for (uint32_t i = 0; i < count; ++i) {
         IpBBoxV1 bbox{};
@@ -509,6 +656,14 @@ GstFlowReturn render(GstBaseSink* base_sink, GstBuffer* buffer) {
         else {
             item["track_id"]     = track_id;
             item["image_sample"] = {{"row", center_y}, {"column", center_x}};
+        }
+        if (mapped_frame.mapped) {
+            std::string crop_error;
+            if (!write_crop_tiff(value_state, mapped_frame.frame, bbox,
+                                 type->second, frame_id, i, crop_error)) {
+                fail_closed(sink, false, crop_error.c_str());
+                return GST_FLOW_ERROR;
+            }
         }
         items.push_back(std::move(item));
     }
@@ -577,6 +732,14 @@ static void ip_text_sink_class_init(IpTextSinkClass* sink_class) {
                             "Installed category map JSON", "",
                             static_cast<GParamFlags>(G_PARAM_READWRITE |
                                                      G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        object_class, kPropertyCropDir,
+        g_param_spec_string(
+            "crop-dir", "crop dir",
+            "Optional class-sorted TIFF crop directory; empty disables crops",
+            "",
+            static_cast<GParamFlags>(G_PARAM_READWRITE |
+                                     G_PARAM_STATIC_STRINGS)));
 
     gst_element_class_set_static_metadata(
         element_class, "Image Process Text Sink", "Sink/Text",

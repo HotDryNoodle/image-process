@@ -100,6 +100,93 @@ runtime_manifest_data.set(
   development_filters_option.disabled() ? 'false' : 'true',
 )
 runtime_manifest_data.set('MOCK_FILTERS', 'true')
+lynxi_option = get_option('lynxi')
+lynxi_sdk_prefix = get_option('lynxi_sdk_prefix')
+if lynxi_sdk_prefix == ''
+  lynxi_env = run_command(
+    ['sh', '-c', 'printf %s "${LYNXI_SDK_PREFIX:-}"'],
+    check: false,
+  )
+  if lynxi_env.returncode() == 0
+    lynxi_sdk_prefix = lynxi_env.stdout().strip()
+  endif
+endif
+
+lynxi_inc = []
+lynxi_lib_dirs = []
+lynxi_sdk_dep = []
+lynxi_found = false
+cpp = meson.get_compiler('cpp')
+if not lynxi_option.disabled()
+  prefixes = []
+  if lynxi_sdk_prefix != ''
+    prefixes += [lynxi_sdk_prefix]
+  endif
+  prefixes += ['/usr/local/lynxi', '/usr', '/usr/local']
+  foreach prefix : prefixes
+    if lynxi_found
+      break
+    endif
+    header_candidates = [
+      prefix / 'include' / 'lynxi' / 'lyn_api.h',
+      prefix / 'include' / 'lyn_api.h',
+      prefix / 'include' / 'lyn_api' / 'lyn_api.h',
+      prefix / 'sdk' / 'include' / 'lyn_api' / 'lyn_api.h',
+    ]
+    foreach header : header_candidates
+      if fs.is_file(header)
+        header_dir = fs.parent(header)
+        lib_dir_candidates = [
+          prefix / 'sdk' / 'lib',
+          prefix / 'bsp' / 'lib',
+          prefix / 'lib',
+          prefix / 'lib64',
+        ]
+        lib_dirs = []
+        foreach d : lib_dir_candidates
+          if fs.is_dir(d)
+            lib_dirs += [d]
+          endif
+        endforeach
+        inc_args = ['-I' + header_dir]
+        bsp_inc = prefix / 'bsp' / 'include'
+        if fs.is_file(bsp_inc / 'lyn_smi.h')
+          inc_args += ['-I' + bsp_inc]
+        endif
+        lynxi_libs = []
+        libs_ok = true
+        foreach lib_name : ['LYNCHIPSDKCLIENT', 'LYNCHIPSDKCLIENTCOMM', 'LYNSMICLIENTCOMM']
+          lib_dep = cpp.find_library(lib_name, dirs: lib_dirs, required: false)
+          if not lib_dep.found()
+            libs_ok = false
+            break
+          endif
+          lynxi_libs += [lib_dep]
+        endforeach
+        if libs_ok
+          lynxi_inc = [header_dir]
+          lynxi_lib_dirs = lib_dirs
+          lynxi_found = true
+          lynxi_sdk_dep = lynxi_libs + [declare_dependency(
+            compile_args: inc_args,
+          )]
+          break
+        endif
+      endif
+    endforeach
+  endforeach
+  if lynxi_option.enabled() and not lynxi_found
+    error('Lynxi detector requested but lyn_api.h / LYNCHIPSDKCLIENT were not found. Set -Dlynxi_sdk_prefix= or LYNXI_SDK_PREFIX.')
+  endif
+endif
+
+runtime_manifest_data.set(
+  'NPU_PLUGIN_ENTRY',
+  lynxi_found
+    ? ',\n    {\n      "plugin": "ipnpu",\n      "factories": ["ImageProcessLynxiDetector"]\n    }'
+    : '',
+)
+runtime_manifest_data.set('NPU_DETECTOR', lynxi_found ? 'true' : 'false')
 runtime_manifest = configure_file(
   input: 'configs/runtime/runtime-manifest.json.in',
   output: 'image-process-runtime-manifest.json',
@@ -150,6 +237,54 @@ if internal_runtime_option.enabled() or internal_runtime_option.auto()
     install: true,
     install_dir: runtime_install_dir,
   )
+
+  if lynxi_found
+    opencv_lynxi_dep = dependency('opencv4', required: true)
+    threads_dep = dependency('threads')
+    lynxi_backend = static_library(
+      'imageprocess-lynxi-backend',
+      files(
+        'src/backends/lynxi/infer/environment.cpp',
+        'src/backends/lynxi/infer/smi.cpp',
+        'src/backends/lynxi/infer/typeConv.cpp',
+        'src/backends/lynxi/infer/yolovXPostProcess.cpp',
+        'src/backends/lynxi/yolox_runtime.cpp',
+      ),
+      include_directories: include_directories(
+        'src/backends/lynxi',
+        'src/backends/lynxi/include',
+        'src/backends/lynxi/infer',
+      ),
+      dependencies: lynxi_sdk_dep + [opencv_lynxi_dep, threads_dep, gstreamer_dep],
+      override_options: ['warning_level=1'],
+    )
+    shared_module(
+      'gstipnpu',
+      files(
+        'src/gst/filters/lynxi_detector.cpp',
+        'src/gst/filters/lynxi_plugin_init.cpp',
+      ),
+      include_directories: include_directories(
+        'src/backends/lynxi',
+        'src/backends/lynxi/include',
+        'src/backends/lynxi/infer',
+      ),
+      dependencies: [
+        gstreamer_dep,
+        gstreamer_base_dep,
+        gstreamer_video_dep,
+        gst_meta_dep,
+        opencv_lynxi_dep,
+        threads_dep,
+      ] + lynxi_sdk_dep,
+      link_with: lynxi_backend,
+      cpp_args: runtime_cpp_args,
+      install: true,
+      install_dir: runtime_install_dir,
+      build_rpath: ':'.join(lynxi_lib_dirs),
+      install_rpath: ':'.join(lynxi_lib_dirs),
+    )
+  endif
 
   if not development_filters_option.disabled()
     shared_module(
@@ -211,7 +346,13 @@ install_data(
 
 install_data(
   'configs/runtime/category-maps/mock-optical-v1.json',
+  'configs/runtime/category-maps/lynxi-optical-v1.json',
   install_dir: get_option('datadir') / 'image-process/runtime/category-maps',
+)
+
+install_data(
+  'configs/runtime/models/lynxi-yolov8n-onnx.v1.json',
+  install_dir: get_option('datadir') / 'image-process/runtime/models',
 )
 
 install_data(
@@ -246,6 +387,7 @@ install_data(
   'samples/cdg00_parse_host.json',
   'samples/m4_sat_c_pushbroom.json',
   'samples/m4_sat_a_stare.json',
+  'samples/npu_hawaii_pushbroom.json',
   install_dir: get_option('datadir') / 'image-process/samples',
 )
 
@@ -283,4 +425,5 @@ summary('SDK via subproject', 'satellite-plugin-sdk', section: 'Dependencies')
 summary('internal runtime', internal_runtime_option, section: 'Runtime')
 summary('OpenCV development sources', opencv_dep.found(), section: 'Runtime')
 summary('development filters', development_filters_option, section: 'Runtime')
+summary('Lynxi detector', lynxi_found, section: 'Runtime')
 summary('runtime install dir', runtime_install_dir, section: 'Runtime')

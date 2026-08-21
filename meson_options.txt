@@ -25,3 +25,17 @@ option(
   value: '',
   description: 'Immutable image-process revision recorded in runtime-manifest.json',
 )
+
+option(
+  'lynxi',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the single-chip Lynxi YOLO detector plugin',
+)
+
+option(
+  'lynxi_sdk_prefix',
+  type: 'string',
+  value: '',
+  description: 'Lynxi userspace prefix containing include/lynxi and lib (also LYNXI_SDK_PREFIX)',
+)

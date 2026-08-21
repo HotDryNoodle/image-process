@@ -210,7 +210,7 @@ assert scaled_meta["filter_width"] == 2176
 assert scaled_meta["filter_height"] == 2176
 assert scaled_meta["original_width"] == 4096
 
-forbidden_factories = ("Yolov8", "DeepSort", "mps", "lynxi")
+forbidden_factories = ("Yolov8", "DeepSort", "mps", "ImageProcessLynxiDetector")
 for name in ("run-01.json", "run-02.json"):
     result = load_json(tmp / name)
     blob = json.dumps(result)

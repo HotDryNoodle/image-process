@@ -78,3 +78,25 @@ all 64 encoded frames and concise metadata records, verifies Ogg/Theora with
 GStreamer decode-to-EOS and FFmpeg tooling, and exercises bad-digest,
 symlink-input, and frame-limit failures. The final work directory contains only
 `video.ogv`, `meta/cdg00.jsonl`, `result.json`, and `pipeline-plan.json`.
+
+## Lynxi NPU detector (secondary hardware)
+
+Build the optional detector only on a machine with Lynxi userspace headers/libs
+(the prefix is `/usr/local/lynxi` on the board and in CI):
+
+```sh
+meson setup build -Dlynxi=enabled -Dlynxi_sdk_prefix="${LYNXI_SDK_PREFIX}"
+meson compile -C build
+export IMAGE_PROCESS_GST_PLUGIN_PATH="$PWD/build"
+export GST_PLUGIN_PATH="$IMAGE_PROCESS_GST_PLUGIN_PATH:${GST_PLUGIN_PATH:-}"
+./scripts/run-npu-hawaii.sh build/image-process /path/to/work-dir
+```
+
+Profile `npu.sat-c.pushbroom.v1` runs
+`CDG00Src → GeometryNormalize → ImageProcessLynxiDetector → TextSink` on
+`data/Hawaii_A2.dat` with model dir `data/lynxi_models/model_yolov8n_onnx/Net_0`.
+This stage uses a single chip (`device-id=0`). When the profile sets
+`crop_tiff=true`, ROI crops are written as uncompressed TIFF files under
+`{work-dir}/crops/<class>/`. Requests still cannot carry a model path.
+Detection quality is judged on the real secondary node; host mock contracts do
+not sign NPU results.

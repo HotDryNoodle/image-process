@@ -1,0 +1,13 @@
+{
+  "id": "lynxi-yolov8n-onnx.v1",
+  "schema_version": "1.0",
+  "backend": "lynxi",
+  "yolo_type": "yolov8",
+  "yolo_type_id": 1,
+  "class_num": 2,
+  "class_map": "lynxi-optical-v1",
+  "device_id": 0,
+  "chip_count": 1,
+  "load_path": "data/lynxi_models/model_yolov8n_onnx/Net_0",
+  "notes": "Lynxi load path is the Net_0 directory. Model blobs stay gitignored under data/."
+}

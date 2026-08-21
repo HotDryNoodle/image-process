@@ -360,6 +360,51 @@
       },
       "max_frames": 3,
       "timeout_sec": 120
+    },
+    "npu.sat-c.pushbroom.v1": {
+      "evidence_class": "target_hardware_runtime",
+      "filter_backend": "lynxi",
+      "output_mode": "product_text",
+      "crop_tiff": true,
+      "sensor_id": "sat-c.line-array",
+      "acquisition_mode": "pushbroom",
+      "category_map": "lynxi-optical-v1",
+      "model_manifest": "lynxi-yolov8n-onnx.v1",
+      "source": {
+        "factory": "CDG00Src",
+        "input_path_property": "location",
+        "properties": {
+          "channel": 0,
+          "image-height": 4096,
+          "stride-lines": 4096,
+          "fps": 30.0
+        }
+      },
+      "geometry": {
+        "factory": "ImageProcessGeometryNormalize",
+        "properties": {
+          "geometry-id": "identity.v1",
+          "scale-x": 1.0,
+          "scale-y": 1.0,
+          "offset-x": 0.0,
+          "offset-y": 0.0
+        }
+      },
+      "filter": {
+        "factory": "ImageProcessLynxiDetector",
+        "role": "detection",
+        "properties": {
+          "model-path": "data/lynxi_models/model_yolov8n_onnx/Net_0",
+          "confidence-threshold": 0.25,
+          "nms-threshold": 0.45,
+          "yolo-type": 1,
+          "device-id": 0,
+          "class-num": 2,
+          "channel-type": 1
+        }
+      },
+      "max_frames": 512,
+      "timeout_sec": 1800
     }
   }
 }
